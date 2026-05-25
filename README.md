@@ -21,7 +21,7 @@ Run `migrations/001_create_knowledge_base.sql` in your Supabase SQL editor (one-
 1. Go to https://api.slack.com/apps → **Create New App → From scratch**
 2. **Socket Mode** → Enable → generate an App-Level Token with `connections:write` → copy as `SLACK_APP_TOKEN`
 3. **OAuth & Permissions → Bot Token Scopes** — add:
-   `app_mentions:read`, `chat:write`, `im:history`, `im:read`, `im:write`, `reactions:write`, `channels:history`
+   `app_mentions:read`, `chat:write`, `im:history`, `im:read`, `im:write`, `reactions:write`, `channels:history`, `channels:read`
 4. **Event Subscriptions → Subscribe to bot events** — add: `app_mention`, `message.im`
 5. Install to workspace → copy **Bot User OAuth Token** as `SLACK_BOT_TOKEN`
 
@@ -40,6 +40,28 @@ python app.py
 ```
 
 > The sentence-transformers model (~90 MB) is downloaded automatically on first run.
+
+---
+
+## Reminder agent
+
+Anyone in Slack can tag the bot with "remind me" to create a time-based reminder:
+
+```
+@uaeops_bot remind me about this
+@uaeops_bot remind me about this message
+```
+
+The bot will reply with a time picker (30 min / 1 hour / 4 hours / Tomorrow 9am / Custom).
+When the time comes, the bot sends you a DM with a link back to the original message and offers
+"Done" or "Remind me again" buttons.
+
+**Rules:**
+- Maximum **3 reminders per message** per user
+- Pending reminders survive bot restarts (stored in `reminders.json`)
+- All preset times are UTC; custom time supports natural language (e.g. `tomorrow 3pm`, `in 2 hours`, `next Monday 9am`)
+
+`reminders.json` is written to the project directory and acts as the full history log.
 
 ---
 
