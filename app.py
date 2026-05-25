@@ -3,6 +3,7 @@ import os
 import logging
 import re
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -50,9 +51,10 @@ histories: dict[str, list[dict]] = {}
 MAX_TURNS = 10
 
 # cached bot user ID (populated on first use)
-_bot_uid: str | None = None
+_bot_uid: Optional[str] = None
 
-scheduler = BackgroundScheduler(timezone="UTC")
+UAE_TZ = timezone(timedelta(hours=4))
+scheduler = BackgroundScheduler(timezone="Asia/Dubai")
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -69,18 +71,18 @@ def _is_remind_request(text: str) -> bool:
 
 
 def _preset_to_dt(preset: str) -> datetime:
-    now = datetime.now(timezone.utc)
+    now_uae = datetime.now(UAE_TZ)
     presets = {
-        "30m":          now + timedelta(minutes=30),
-        "1h":           now + timedelta(hours=1),
-        "4h":           now + timedelta(hours=4),
-        "tomorrow_9am": (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0),
+        "30m":          now_uae + timedelta(minutes=30),
+        "1h":           now_uae + timedelta(hours=1),
+        "4h":           now_uae + timedelta(hours=4),
+        "tomorrow_9am": (now_uae + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0),
     }
     return presets[preset]
 
 
 def _format_dt(dt: datetime) -> str:
-    return dt.strftime("%a %d %b %Y at %H:%M UTC")
+    return dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
 
 
 # ── Block Kit builders ────────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ def _time_picker_blocks(ctx: dict, count: int) -> list[dict]:
         return {
             "type": "button",
             "text": {"type": "plain_text", "text": label},
-            "action_id": "remind_preset",
+            "action_id": f"remind_preset_{preset}",
             "value": json.dumps({"preset": preset, **ctx}),
         }
 
@@ -374,7 +376,10 @@ def handle_dm(event, say, client):
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
 
-@slack_app.action("remind_preset")
+@slack_app.action("remind_preset_30m")
+@slack_app.action("remind_preset_1h")
+@slack_app.action("remind_preset_4h")
+@slack_app.action("remind_preset_tomorrow_9am")
 def handle_remind_preset(ack, body, respond, client):
     ack()
     try:

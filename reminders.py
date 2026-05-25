@@ -7,6 +7,7 @@ import uuid
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 REMINDERS_FILE = Path("reminders.json")
 MAX_REMINDERS = 3
@@ -83,7 +84,7 @@ def update_status(reminder_id: str, status: str):
         _save(data)
 
 
-def get(reminder_id: str) -> dict | None:
+def get(reminder_id: str) -> Optional[dict]:
     with _lock:
         return next((r for r in _load() if r["id"] == reminder_id), None)
 
