@@ -11,13 +11,20 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 import dateparser
 
-import knowledge_base
 import reminders as reminder_store
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Knowledge base is optional — bot still handles reminders without Supabase
+try:
+    import knowledge_base
+    _KB_AVAILABLE = True
+except Exception as _kb_err:
+    logger.warning("Knowledge base unavailable (%s). Q&A disabled, reminders still work.", _kb_err)
+    _KB_AVAILABLE = False
 
 slack_app = App(token=os.environ["SLACK_BOT_TOKEN"])
 claude    = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -217,6 +224,13 @@ def _load_pending_reminders():
 # ── Q&A answer (existing) ─────────────────────────────────────────────────────
 
 def _qa_answer(channel_id: str, question: str) -> str:
+    if not _KB_AVAILABLE:
+        return (
+            "The knowledge base isn't configured yet. "
+            "Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in `.env`, "
+            "run the migration, then restart the bot."
+        )
+
     results = knowledge_base.search(question)
     if not results:
         return NO_RESULTS_MSG
@@ -305,47 +319,57 @@ def _handle_remind_request(event, say, client):
 
 @slack_app.event("app_mention")
 def handle_mention(event, say, client):
-    channel   = event["channel"]
-    bot_uid   = _get_bot_uid(client)
-    raw_text  = event.get("text", "")
-    clean     = raw_text.replace(f"<@{bot_uid}>", "").strip()
-
-    if _is_remind_request(clean):
-        _handle_remind_request(event, say, client)
-        return
-
-    if not clean:
-        say("Hi! Ask me anything.", thread_ts=event["ts"])
-        return
-
-    client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
     try:
-        say(text=_qa_answer(channel, clean), thread_ts=event["ts"])
+        channel   = event["channel"]
+        bot_uid   = _get_bot_uid(client)
+        raw_text  = event.get("text", "")
+        clean     = raw_text.replace(f"<@{bot_uid}>", "").strip()
+
+        if _is_remind_request(clean):
+            _handle_remind_request(event, say, client)
+            return
+
+        if not clean:
+            say("Hi! Ask me anything.", thread_ts=event["ts"])
+            return
+
+        client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        try:
+            say(text=_qa_answer(channel, clean), thread_ts=event["ts"])
+        finally:
+            client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+
     except Exception as e:
-        logger.error("Error: %s", e)
-        say(text="Something went wrong — please try again.", thread_ts=event["ts"])
-    finally:
-        client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+        logger.error("handle_mention error: %s", e, exc_info=True)
+        try:
+            say(text="Something went wrong — please try again.", thread_ts=event.get("ts"))
+        except Exception:
+            pass
 
 
 @slack_app.event("message")
 def handle_dm(event, say, client):
-    if event.get("bot_id") or event.get("subtype") or event.get("channel_type") != "im":
-        return
-
-    question = event.get("text", "").strip()
-    if not question:
-        return
-
-    channel = event["channel"]
-    client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
     try:
-        say(text=_qa_answer(channel, question))
+        if event.get("bot_id") or event.get("subtype") or event.get("channel_type") != "im":
+            return
+
+        question = event.get("text", "").strip()
+        if not question:
+            return
+
+        channel = event["channel"]
+        client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        try:
+            say(text=_qa_answer(channel, question))
+        finally:
+            client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+
     except Exception as e:
-        logger.error("Error: %s", e)
-        say(text="Something went wrong — please try again.")
-    finally:
-        client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+        logger.error("handle_dm error: %s", e, exc_info=True)
+        try:
+            say(text="Something went wrong — please try again.")
+        except Exception:
+            pass
 
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
@@ -555,6 +579,8 @@ def handle_remind_again(ack, respond, body, client):
 # ── startup ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    logger.info("Starting UAEOPS Bot — KB available: %s", _KB_AVAILABLE)
     scheduler.start()
     _load_pending_reminders()
+    logger.info("Bot ready. Connecting to Slack via Socket Mode...")
     SocketModeHandler(slack_app, os.environ["SLACK_APP_TOKEN"]).start()
