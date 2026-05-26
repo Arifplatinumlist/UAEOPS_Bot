@@ -2,6 +2,8 @@
 
 Follow these steps in order. Takes about 15 minutes.
 
+> **Want it running 24/7 without your PC?** Skip to the [Railway Cloud Deployment](#railway-cloud-deployment-recommended) section.
+
 ---
 
 ## What this bot does
@@ -194,3 +196,57 @@ Once the bot is working, you can add documents for the Q&A feature:
    python ingest.py --file your-runbook.pdf
    python ingest.py --url https://your-wiki.com/page
    ```
+
+---
+
+## Railway Cloud Deployment (Recommended)
+
+Deploy to Railway so the bot runs 24/7 without your PC needing to be on.
+Free tier is enough for this bot.
+
+### Step 1 — Create a Railway account
+
+Go to **https://railway.app** and sign up with your GitHub account.
+
+### Step 2 — Create a new project from GitHub
+
+1. Click **New Project**
+2. Select **Deploy from GitHub repo**
+3. Choose **Arifplatinumlist/UAEOPS_Bot**
+4. Railway detects the config automatically — click **Deploy**
+
+### Step 3 — Add environment variables
+
+1. Click your service → **Variables** tab
+2. Add these one by one (click **New Variable** for each):
+
+| Variable | Value |
+|---|---|
+| `SLACK_BOT_TOKEN` | `xoxb-...` (from api.slack.com/apps → UAE_OPS → OAuth & Permissions) |
+| `SLACK_APP_TOKEN` | `xapp-...` (from api.slack.com/apps → UAE_OPS → Basic Information → App-Level Tokens) |
+| `ANTHROPIC_API_KEY` | `sk-ant-...` (from console.anthropic.com) |
+
+3. Railway automatically redeploys after you save variables
+
+### Step 4 — Verify it's running
+
+1. Click **Deployments** → open the latest deployment
+2. Click **View Logs**
+3. You should see:
+   ```
+   INFO  Starting UAEOPS Bot — KB available: False
+   INFO  Bot ready. Connecting to Slack via Socket Mode...
+   ```
+
+That's it — the bot is now live 24/7. Railway restarts it automatically if it ever crashes.
+
+### Adding knowledge base to Railway
+
+Add these two extra variables in the Railway **Variables** tab:
+
+| Variable | Value |
+|---|---|
+| `SUPABASE_URL` | `https://ryqvaouqpufdacbhosyk.supabase.co` |
+| `SUPABASE_SERVICE_KEY` | Your service role key from Supabase → Settings → API |
+
+Then run the migration once in the Supabase SQL editor (`migrations/001_create_knowledge_base.sql`) and redeploy.
