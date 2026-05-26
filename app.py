@@ -61,7 +61,7 @@ scheduler = BackgroundScheduler(timezone="Asia/Dubai")
 
 # Thread pool — lets slow Notion+Claude calls run without blocking the
 # Socket Mode WebSocket receive loop, so rapid messages are never dropped.
-_pool = ThreadPoolExecutor(max_workers=4)
+_pool = ThreadPoolExecutor(max_workers=8)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -385,10 +385,9 @@ def _handle_remind_request(event, say, client):
 
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
-def _process_mention(event, say, client):
-    channel        = event["channel"]
-    user_id        = event.get("user", "")
-    placeholder_ts = None
+def _process_mention(event, say, client, placeholder_ts=None):
+    channel = event["channel"]
+    user_id = event.get("user", "")
     try:
         bot_uid  = _get_bot_uid(client)
         raw_text = event.get("text", "")
@@ -397,21 +396,26 @@ def _process_mention(event, say, client):
                     channel, event.get("channel_type"), clean[:120])
 
         if _is_remind_request(clean):
+            # Remove the Q&A placeholder before showing the time picker
+            if placeholder_ts:
+                try:
+                    client.chat_delete(channel=channel, ts=placeholder_ts)
+                except Exception:
+                    pass
             _handle_remind_request(event, say, client)
             return
 
         if not clean:
-            client.chat_postMessage(channel=channel, text="Hi! Ask me anything.",
-                                    thread_ts=event["ts"], reply_broadcast=True)
+            if placeholder_ts:
+                try:
+                    client.chat_update(channel=channel, ts=placeholder_ts,
+                                       text="Hi! Ask me anything.")
+                except Exception:
+                    pass
+            else:
+                client.chat_postMessage(channel=channel, text="Hi! Ask me anything.",
+                                        thread_ts=event["ts"], reply_broadcast=True)
             return
-
-        try:
-            resp = client.chat_postMessage(
-                channel=channel, text="⏳ Searching the knowledge base...",
-                thread_ts=event["ts"], reply_broadcast=True)
-            placeholder_ts = resp.get("ts")
-        except Exception:
-            pass
 
         answer      = _qa_answer(channel, clean)
         feedback_id = feedback_store.create(clean, answer, channel, user_id)
@@ -444,24 +448,27 @@ def _process_mention(event, say, client):
 
 @slack_app.event("app_mention")
 def handle_mention(event, say, client):
-    _pool.submit(_process_mention, event, say, client)
-
-
-def _process_dm(event, say, client):
+    # Post placeholder immediately so users see feedback before the pool
+    # worker even starts — critical when workers are busy with other messages.
     channel        = event["channel"]
-    user_id        = event.get("user", "")
     placeholder_ts = None
+    try:
+        resp = client.chat_postMessage(
+            channel=channel, text="⏳ Searching the knowledge base...",
+            thread_ts=event["ts"], reply_broadcast=True)
+        placeholder_ts = resp.get("ts")
+    except Exception:
+        pass
+    _pool.submit(_process_mention, event, say, client, placeholder_ts)
+
+
+def _process_dm(event, client, placeholder_ts=None):
+    channel = event["channel"]
+    user_id = event.get("user", "")
     try:
         question = event.get("text", "").strip()
         if not question:
             return
-
-        try:
-            resp = client.chat_postMessage(channel=channel,
-                                           text="⏳ Searching the knowledge base...")
-            placeholder_ts = resp.get("ts")
-        except Exception:
-            pass
 
         answer      = _qa_answer(channel, question)
         feedback_id = feedback_store.create(question, answer, channel, user_id)
@@ -509,7 +516,7 @@ def _confirmation_blocks(text: str) -> list[dict]:
 
 
 @slack_app.event("message")
-def handle_dm(event, say, client):
+def handle_dm(event, client):
     subtype      = event.get("subtype")
     bot_id       = event.get("bot_id")
     channel_type = event.get("channel_type")
@@ -519,7 +526,18 @@ def handle_dm(event, say, client):
     if bot_id or subtype or channel_type not in ("im", "mpim"):
         return
 
-    _pool.submit(_process_dm, event, say, client)
+    # Post the placeholder immediately in the event handler (~200 ms) so the
+    # user gets instant feedback even if all pool workers are busy.
+    channel        = event["channel"]
+    placeholder_ts = None
+    try:
+        resp = client.chat_postMessage(channel=channel,
+                                       text="⏳ Searching the knowledge base...")
+        placeholder_ts = resp.get("ts")
+    except Exception:
+        pass
+
+    _pool.submit(_process_dm, event, client, placeholder_ts)
 
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
