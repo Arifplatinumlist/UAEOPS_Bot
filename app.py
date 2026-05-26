@@ -14,6 +14,7 @@ from apscheduler.triggers.date import DateTrigger
 import dateparser
 
 import reminders as reminder_store
+import feedback_store
 
 load_dotenv()
 
@@ -234,6 +235,30 @@ def _load_pending_reminders():
 
 # ── Q&A answer (existing) ─────────────────────────────────────────────────────
 
+def _answer_blocks(answer_text: str, feedback_id: Optional[str]) -> list[dict]:
+    """Bot answer with optional 👍/👎 feedback buttons."""
+    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": answer_text}}]
+    if feedback_id:
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button", "style": "primary",
+                    "text": {"type": "plain_text", "text": "👍 Helpful"},
+                    "action_id": "feedback_positive",
+                    "value": feedback_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "👎 Not helpful"},
+                    "action_id": "feedback_negative",
+                    "value": feedback_id,
+                },
+            ],
+        })
+    return blocks
+
+
 def _qa_answer(channel_id: str, question: str) -> str:
     if not _KB_AVAILABLE:
         return (
@@ -243,25 +268,51 @@ def _qa_answer(channel_id: str, question: str) -> str:
         )
 
     results = knowledge_base.search(question)
-    if not results:
+
+    # Enrich with past positively-rated answers for similar questions
+    past = []
+    try:
+        past = feedback_store.get_relevant(question)
+    except Exception:
+        pass
+
+    if not results and not past:
         return NO_RESULTS_MSG
 
-    context = "\n\n---\n\n".join(
-        f"[Source: {r.get('title') or r.get('source', 'unknown')}]\n{r['content']}"
-        for r in results
-    )
+    context_parts = []
+    if results:
+        context_parts.append(
+            "\n\n---\n\n".join(
+                f"[Source: {r.get('title') or r.get('source', 'unknown')}]\n{r['content']}"
+                for r in results
+            )
+        )
+    if past:
+        past_text = "\n\n".join(
+            f"Q: {p['question']}\nA: {p['answer'][:500]}"
+            for p in past
+        )
+        context_parts.append(f"[Past verified answers — confirmed helpful by users]\n{past_text}")
+
+    context = "\n\n---\n\n".join(context_parts)
     augmented = f"Knowledge base excerpts:\n\n{context}\n\n---\n\nQuestion: {question}"
 
     history = histories.setdefault(channel_id, [])
     history.append({"role": "user", "content": augmented})
 
-    response = claude.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=history,
-    )
-    reply = response.content[0].text
+    try:
+        response = claude.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            messages=history,
+        )
+        reply = response.content[0].text
+    except Exception:
+        # Remove the appended message so the next call doesn't see consecutive
+        # user turns, which Claude rejects and causes permanent silence.
+        history.pop()
+        raise
 
     history[-1] = {"role": "user", "content": question}
     history.append({"role": "assistant", "content": reply})
@@ -335,8 +386,9 @@ def _handle_remind_request(event, say, client):
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
 def _process_mention(event, say, client):
-    channel         = event["channel"]
-    placeholder_ts  = None
+    channel        = event["channel"]
+    user_id        = event.get("user", "")
+    placeholder_ts = None
     try:
         bot_uid  = _get_bot_uid(client)
         raw_text = event.get("text", "")
@@ -349,26 +401,33 @@ def _process_mention(event, say, client):
             return
 
         if not clean:
-            say("Hi! Ask me anything.", thread_ts=event["ts"], reply_broadcast=True)
+            client.chat_postMessage(channel=channel, text="Hi! Ask me anything.",
+                                    thread_ts=event["ts"], reply_broadcast=True)
             return
 
-        # Post a placeholder immediately so the user sees a response right away
         try:
-            resp = say(text="⏳ Searching the knowledge base...",
-                       thread_ts=event["ts"], reply_broadcast=True)
+            resp = client.chat_postMessage(
+                channel=channel, text="⏳ Searching the knowledge base...",
+                thread_ts=event["ts"], reply_broadcast=True)
             placeholder_ts = resp.get("ts")
         except Exception:
             pass
 
-        answer = _qa_answer(channel, clean)
+        answer      = _qa_answer(channel, clean)
+        feedback_id = feedback_store.create(clean, answer, channel, user_id)
 
         if placeholder_ts:
             try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                client.chat_update(
+                    channel=channel, ts=placeholder_ts,
+                    text=answer, blocks=_answer_blocks(answer, feedback_id),
+                )
                 return
             except Exception:
                 pass
-        say(text=answer, thread_ts=event["ts"], reply_broadcast=True)
+        client.chat_postMessage(channel=channel, text=answer,
+                                blocks=_answer_blocks(answer, feedback_id),
+                                thread_ts=event["ts"], reply_broadcast=True)
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
@@ -377,7 +436,8 @@ def _process_mention(event, say, client):
             if placeholder_ts:
                 client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
             else:
-                say(text=error_text, thread_ts=event.get("ts"), reply_broadcast=True)
+                client.chat_postMessage(channel=channel, text=error_text,
+                                        thread_ts=event.get("ts"), reply_broadcast=True)
         except Exception:
             pass
 
@@ -389,28 +449,34 @@ def handle_mention(event, say, client):
 
 def _process_dm(event, say, client):
     channel        = event["channel"]
+    user_id        = event.get("user", "")
     placeholder_ts = None
     try:
         question = event.get("text", "").strip()
         if not question:
             return
 
-        # Immediate feedback — user sees this within ~1 second while Notion+Claude run
         try:
-            resp = say(text="⏳ Searching the knowledge base...")
+            resp = client.chat_postMessage(channel=channel,
+                                           text="⏳ Searching the knowledge base...")
             placeholder_ts = resp.get("ts")
         except Exception:
             pass
 
-        answer = _qa_answer(channel, question)
+        answer      = _qa_answer(channel, question)
+        feedback_id = feedback_store.create(question, answer, channel, user_id)
 
         if placeholder_ts:
             try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                client.chat_update(
+                    channel=channel, ts=placeholder_ts,
+                    text=answer, blocks=_answer_blocks(answer, feedback_id),
+                )
                 return
             except Exception:
                 pass
-        say(text=answer)
+        client.chat_postMessage(channel=channel, text=answer,
+                                blocks=_answer_blocks(answer, feedback_id))
 
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
@@ -419,7 +485,7 @@ def _process_dm(event, say, client):
             if placeholder_ts:
                 client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
             else:
-                say(text=error_text)
+                client.chat_postMessage(channel=channel, text=error_text)
         except Exception:
             pass
 
@@ -692,6 +758,41 @@ def handle_remind_dismiss(ack, body, client):
         client.chat_delete(channel=channel, ts=ts)
     except Exception as e:
         logger.warning("Could not dismiss message: %s", e)
+
+
+# ── Feedback action handlers ──────────────────────────────────────────────────
+
+@slack_app.action("feedback_positive")
+@slack_app.action("feedback_negative")
+def handle_feedback(ack, body, client):
+    ack()
+    action      = body["actions"][0]
+    feedback_id = action["value"]
+    user_id     = body["user"]["id"]
+    rating      = "positive" if action["action_id"] == "feedback_positive" else "negative"
+    feedback_store.rate(feedback_id, user_id, rating)
+
+    try:
+        channel = body["container"]["channel_id"]
+        ts      = body["container"]["message_ts"]
+        original_blocks = body.get("message", {}).get("blocks", [])
+        answer_text = next(
+            (b.get("text", {}).get("text", "") for b in original_blocks if b.get("type") == "section"),
+            "",
+        )
+        emoji = "👍" if rating == "positive" else "👎"
+        client.chat_update(
+            channel=channel, ts=ts,
+            text=answer_text,
+            blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": answer_text}},
+                {"type": "context", "elements": [
+                    {"type": "mrkdwn", "text": f"{emoji} Feedback recorded — thank you!"}
+                ]},
+            ],
+        )
+    except Exception as e:
+        logger.warning("Could not update feedback message: %s", e)
 
 
 # ── startup ───────────────────────────────────────────────────────────────────
