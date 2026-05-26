@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from dotenv import load_dotenv
@@ -56,6 +57,10 @@ _bot_uid: Optional[str] = None
 
 UAE_TZ = timezone(timedelta(hours=4))
 scheduler = BackgroundScheduler(timezone="Asia/Dubai")
+
+# Thread pool — lets slow Notion+Claude calls run without blocking the
+# Socket Mode WebSocket receive loop, so rapid messages are never dropped.
+_pool = ThreadPoolExecutor(max_workers=4)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -329,14 +334,12 @@ def _handle_remind_request(event, say, client):
 
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
-@slack_app.event("app_mention")
-def handle_mention(event, say, client):
+def _process_mention(event, say, client):
     try:
-        channel   = event["channel"]
-        bot_uid   = _get_bot_uid(client)
-        raw_text  = event.get("text", "")
-        # Strip <@UID> and mobile's <@UID|name> format
-        clean = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
+        channel  = event["channel"]
+        bot_uid  = _get_bot_uid(client)
+        raw_text = event.get("text", "")
+        clean    = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
         logger.info("app_mention: channel=%s channel_type=%s clean=%r",
                     channel, event.get("channel_type"), clean[:120])
 
@@ -353,8 +356,6 @@ def handle_mention(event, say, client):
         except Exception:
             pass
         try:
-            # reply_broadcast=True makes the answer visible in the channel feed on mobile
-            # (not just buried in the thread)
             say(text=_qa_answer(channel, clean), thread_ts=event["ts"], reply_broadcast=True)
         finally:
             try:
@@ -370,19 +371,13 @@ def handle_mention(event, say, client):
             pass
 
 
-@slack_app.event("message")
-def handle_dm(event, say, client):
+@slack_app.event("app_mention")
+def handle_mention(event, say, client):
+    _pool.submit(_process_mention, event, say, client)
+
+
+def _process_dm(event, say, client):
     try:
-        subtype      = event.get("subtype")
-        bot_id       = event.get("bot_id")
-        channel_type = event.get("channel_type")
-        logger.info("message event: channel_type=%s subtype=%s bot_id=%s",
-                    channel_type, subtype, bool(bot_id))
-
-        # Accept 1-to-1 DMs (im) and multi-party DMs (mpim)
-        if bot_id or subtype or channel_type not in ("im", "mpim"):
-            return
-
         question = event.get("text", "").strip()
         if not question:
             return
@@ -424,6 +419,20 @@ def _confirmation_blocks(text: str) -> list[dict]:
             ],
         },
     ]
+
+
+@slack_app.event("message")
+def handle_dm(event, say, client):
+    subtype      = event.get("subtype")
+    bot_id       = event.get("bot_id")
+    channel_type = event.get("channel_type")
+    logger.info("message event: channel_type=%s subtype=%s bot_id=%s",
+                channel_type, subtype, bool(bot_id))
+
+    if bot_id or subtype or channel_type not in ("im", "mpim"):
+        return
+
+    _pool.submit(_process_dm, event, say, client)
 
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
