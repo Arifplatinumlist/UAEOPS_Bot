@@ -282,9 +282,10 @@ After regenerating: update all Railway environment variables (Variables tab → 
 - ✅ Dismiss button on all reminder confirmations (`42332b6`)
 - ✅ Q&A crash fixed — reactions:write scope error caught silently (`a492764`)
 - ✅ Notion search fixed — image-heavy pages no longer silently dropped (`e7b879d`)
-- ✅ README.md replaced with DRAFT_README.md (skills overview + Chat & Q&A section)
-- ✅ INCIDENT_REPORT.md created — full history of all bugs, root causes, and fixes
+- ✅ README.md replaced with DRAFT_README.md (skills overview + Chat & Q&A section) (`8a463fd`)
+- ✅ INCIDENT_REPORT.md created — full history of all bugs, root causes, and fixes (`7e45465`)
 - ✅ Incident report added to Notion Document Hub — bot can now troubleshoot using its own history
+- ✅ INC-013 added — bot offline during rapid deployments (force-redeploy fix documented) (`5bf8209`)
 
 ---
 
@@ -310,7 +311,7 @@ After regenerating: update all Railway environment variables (Variables tab → 
 
 ## 15. Live Status (May 26, 2026)
 
-- **Latest commit:** `e7b879d` — Fix Notion search: include image-heavy pages, add logging
+- **Latest commit:** `5bf8209` — Add INC-013: bot offline during rapid deployments
 - **Railway:** Online ✅ — auto-deploys on every push to main
 - **Supabase:** `SUPABASE_SERVICE_KEY` set to correct service_role JWT ✅
 - **NOTION_TOKEN:** ✅ Set in Railway
@@ -330,6 +331,11 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | `4ef015a` | Rewrite HANDOVER.md for current architecture |
 | `42332b6` | Add ✕ Dismiss button to all reminder confirmations |
 | `a492764` | Fix Q&A crash: reactions:write scope missing — fail silently |
+| `e7b879d` | Fix Notion search: include image-heavy pages, add caption extraction |
+| `8a463fd` | Update README: skills overview + Chat & Q&A as Skill 2 |
+| `7e45465` | Add INCIDENT_REPORT.md + update HANDOVER.md |
+| `5ce6fbf` | Force redeploy (bot was offline after rapid commits) |
+| `5bf8209` | Add INC-013: bot offline during rapid deployments |
 
 **To test reminders:**
 1. In any Slack channel: `@UAEOPS_Bot remind me`
