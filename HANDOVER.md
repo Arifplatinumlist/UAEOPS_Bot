@@ -272,16 +272,19 @@ After regenerating: update all Railway environment variables (Variables tab → 
 ## 13. Outstanding Tasks
 
 1. **🔴 Rotate all credentials** (Section 12) — highest priority
-2. **🟡 Review and approve `DRAFT_README.md`** — once approved, replace `README.md` with it
-3. **🟡 Add `reactions:write` scope to Slack app** — bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add `reactions:write` → Reinstall App → update `SLACK_BOT_TOKEN` in Railway
-4. **🟡 Verify Q&A answers** — Notion pages are connected (Document Hub database + 3 child pages auto-connected). Test with real questions about ops task channel, alerts, permit guidelines
-5. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
+2. **🟡 Add `reactions:write` scope to Slack app** — bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add `reactions:write` → Reinstall App → update `SLACK_BOT_TOKEN` in Railway
+3. **🟡 Verify Q&A quality** — pages connected, search working. Test with real questions and keep adding Notion pages as content grows
+4. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
 
 **Completed this session:**
 - ✅ `NOTION_TOKEN` added to Railway — Q&A enabled
-- ✅ Notion knowledge base connected — Document Hub database (uaeops-tasks onboarding, Alert-monitor-uae onboarding, Permit guidelines)
+- ✅ Notion knowledge base connected — Document Hub database (auto-propagates to all child pages)
 - ✅ Dismiss button on all reminder confirmations (`42332b6`)
-- ✅ Q&A crash fixed — reactions:write scope error now caught silently (`a492764`)
+- ✅ Q&A crash fixed — reactions:write scope error caught silently (`a492764`)
+- ✅ Notion search fixed — image-heavy pages no longer silently dropped (`e7b879d`)
+- ✅ README.md replaced with DRAFT_README.md (skills overview + Chat & Q&A section)
+- ✅ INCIDENT_REPORT.md created — full history of all bugs, root causes, and fixes
+- ✅ Incident report added to Notion Document Hub — bot can now troubleshoot using its own history
 
 ---
 
@@ -307,7 +310,7 @@ After regenerating: update all Railway environment variables (Variables tab → 
 
 ## 15. Live Status (May 26, 2026)
 
-- **Latest commit:** `a492764` — Fix Q&A crash: wrap reactions_add/remove in try/except
+- **Latest commit:** `e7b879d` — Fix Notion search: include image-heavy pages, add logging
 - **Railway:** Online ✅ — auto-deploys on every push to main
 - **Supabase:** `SUPABASE_SERVICE_KEY` set to correct service_role JWT ✅
 - **NOTION_TOKEN:** ✅ Set in Railway
