@@ -14,7 +14,6 @@ from apscheduler.triggers.date import DateTrigger
 import dateparser
 
 import reminders as reminder_store
-import feedback_store
 
 load_dotenv()
 
@@ -59,8 +58,8 @@ _bot_uid: Optional[str] = None
 UAE_TZ = timezone(timedelta(hours=4))
 scheduler = BackgroundScheduler(timezone="Asia/Dubai")
 
-# Thread pool — lets slow Notion+Claude calls run without blocking the
-# Socket Mode WebSocket receive loop, so rapid messages are never dropped.
+# Thread pool — slow Notion+Claude calls run here so the Socket Mode
+# receive loop is never blocked and rapid messages are never dropped.
 _pool = ThreadPoolExecutor(max_workers=8)
 
 
@@ -235,30 +234,6 @@ def _load_pending_reminders():
 
 # ── Q&A answer (existing) ─────────────────────────────────────────────────────
 
-def _answer_blocks(answer_text: str, feedback_id: Optional[str]) -> list[dict]:
-    """Bot answer with optional 👍/👎 feedback buttons."""
-    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": answer_text}}]
-    if feedback_id:
-        blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button", "style": "primary",
-                    "text": {"type": "plain_text", "text": "👍 Helpful"},
-                    "action_id": "feedback_positive",
-                    "value": feedback_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "👎 Not helpful"},
-                    "action_id": "feedback_negative",
-                    "value": feedback_id,
-                },
-            ],
-        })
-    return blocks
-
-
 def _qa_answer(channel_id: str, question: str) -> str:
     if not _KB_AVAILABLE:
         return (
@@ -268,33 +243,13 @@ def _qa_answer(channel_id: str, question: str) -> str:
         )
 
     results = knowledge_base.search(question)
-
-    # Enrich with past positively-rated answers for similar questions
-    past = []
-    try:
-        past = feedback_store.get_relevant(question)
-    except Exception:
-        pass
-
-    if not results and not past:
+    if not results:
         return NO_RESULTS_MSG
 
-    context_parts = []
-    if results:
-        context_parts.append(
-            "\n\n---\n\n".join(
-                f"[Source: {r.get('title') or r.get('source', 'unknown')}]\n{r['content']}"
-                for r in results
-            )
-        )
-    if past:
-        past_text = "\n\n".join(
-            f"Q: {p['question']}\nA: {p['answer'][:500]}"
-            for p in past
-        )
-        context_parts.append(f"[Past verified answers — confirmed helpful by users]\n{past_text}")
-
-    context = "\n\n---\n\n".join(context_parts)
+    context = "\n\n---\n\n".join(
+        f"[Source: {r.get('title') or r.get('source', 'unknown')}]\n{r['content']}"
+        for r in results
+    )
     augmented = f"Knowledge base excerpts:\n\n{context}\n\n---\n\nQuestion: {question}"
 
     history = histories.setdefault(channel_id, [])
@@ -309,8 +264,8 @@ def _qa_answer(channel_id: str, question: str) -> str:
         )
         reply = response.content[0].text
     except Exception:
-        # Remove the appended message so the next call doesn't see consecutive
-        # user turns, which Claude rejects and causes permanent silence.
+        # Remove the appended entry so the next call doesn't see two
+        # consecutive user turns, which Claude rejects permanently.
         history.pop()
         raise
 
@@ -385,18 +340,16 @@ def _handle_remind_request(event, say, client):
 
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
-def _process_mention(event, say, client, placeholder_ts=None):
+def _process_mention(event, say, client, placeholder_ts):
     channel = event["channel"]
-    user_id = event.get("user", "")
     try:
         bot_uid  = _get_bot_uid(client)
         raw_text = event.get("text", "")
+        # Handle both desktop <@UID> and mobile <@UID|name> mention formats
         clean    = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
-        logger.info("app_mention: channel=%s channel_type=%s clean=%r",
-                    channel, event.get("channel_type"), clean[:120])
+        logger.info("app_mention: channel=%s clean=%r", channel, clean[:80])
 
         if _is_remind_request(clean):
-            # Remove the Q&A placeholder before showing the time picker
             if placeholder_ts:
                 try:
                     client.chat_delete(channel=channel, ts=placeholder_ts)
@@ -417,30 +370,33 @@ def _process_mention(event, say, client, placeholder_ts=None):
                                         thread_ts=event["ts"], reply_broadcast=True)
             return
 
-        answer      = _qa_answer(channel, clean)
-        feedback_id = feedback_store.create(clean, answer, channel, user_id)
+        answer = _qa_answer(channel, clean)
 
+        # Delete the thread-only placeholder, then post the answer fresh with
+        # reply_broadcast=True so it appears in the main channel feed AND thread.
+        # (chat_update does not propagate to the channel-feed broadcast copy,
+        # so we must delete + repost rather than update.)
         if placeholder_ts:
             try:
-                client.chat_update(
-                    channel=channel, ts=placeholder_ts,
-                    text=answer, blocks=_answer_blocks(answer, feedback_id),
-                )
-                return
+                client.chat_delete(channel=channel, ts=placeholder_ts)
             except Exception:
                 pass
-        client.chat_postMessage(channel=channel, text=answer,
-                                blocks=_answer_blocks(answer, feedback_id),
-                                thread_ts=event["ts"], reply_broadcast=True)
+
+        client.chat_postMessage(
+            channel=channel,
+            text=answer,
+            thread_ts=event["ts"],
+            reply_broadcast=True,
+        )
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
-        error_text = "Something went wrong — please try again."
+        error_msg = "Something went wrong — please try again."
         try:
             if placeholder_ts:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
+                client.chat_update(channel=channel, ts=placeholder_ts, text=error_msg)
             else:
-                client.chat_postMessage(channel=channel, text=error_text,
+                client.chat_postMessage(channel=channel, text=error_msg,
                                         thread_ts=event.get("ts"), reply_broadcast=True)
         except Exception:
             pass
@@ -448,53 +404,59 @@ def _process_mention(event, say, client, placeholder_ts=None):
 
 @slack_app.event("app_mention")
 def handle_mention(event, say, client):
-    # Post placeholder immediately so users see feedback before the pool
-    # worker even starts — critical when workers are busy with other messages.
     channel        = event["channel"]
     placeholder_ts = None
     try:
-        resp = client.chat_postMessage(
-            channel=channel, text="⏳ Searching the knowledge base...",
-            thread_ts=event["ts"], reply_broadcast=True)
+        # Post placeholder to thread only (no reply_broadcast) for instant feedback.
+        # The worker will delete this and post the answer fresh with reply_broadcast.
+        resp = client.chat_postMessage(channel=channel,
+                                       text="⏳ Searching the knowledge base...",
+                                       thread_ts=event["ts"])
         placeholder_ts = resp.get("ts")
     except Exception:
         pass
     _pool.submit(_process_mention, event, say, client, placeholder_ts)
 
 
-def _process_dm(event, client, placeholder_ts=None):
+def _process_dm(event, client, placeholder_ts):
     channel = event["channel"]
-    user_id = event.get("user", "")
     try:
         question = event.get("text", "").strip()
         if not question:
             return
-
-        answer      = _qa_answer(channel, question)
-        feedback_id = feedback_store.create(question, answer, channel, user_id)
-
+        answer = _qa_answer(channel, question)
         if placeholder_ts:
             try:
-                client.chat_update(
-                    channel=channel, ts=placeholder_ts,
-                    text=answer, blocks=_answer_blocks(answer, feedback_id),
-                )
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
                 return
             except Exception:
                 pass
-        client.chat_postMessage(channel=channel, text=answer,
-                                blocks=_answer_blocks(answer, feedback_id))
-
+        client.chat_postMessage(channel=channel, text=answer)
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
-        error_text = "Something went wrong — please try again."
+        error_msg = "Something went wrong — please try again."
         try:
             if placeholder_ts:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
+                client.chat_update(channel=channel, ts=placeholder_ts, text=error_msg)
             else:
-                client.chat_postMessage(channel=channel, text=error_text)
+                client.chat_postMessage(channel=channel, text=error_msg)
         except Exception:
             pass
+
+
+@slack_app.event("message")
+def handle_dm(event, say, client):
+    if event.get("bot_id") or event.get("subtype") or event.get("channel_type") not in ("im", "mpim"):
+        return
+    channel        = event["channel"]
+    placeholder_ts = None
+    try:
+        resp = client.chat_postMessage(channel=channel,
+                                       text="⏳ Searching the knowledge base...")
+        placeholder_ts = resp.get("ts")
+    except Exception:
+        pass
+    _pool.submit(_process_dm, event, client, placeholder_ts)
 
 
 def _confirmation_blocks(text: str) -> list[dict]:
@@ -513,31 +475,6 @@ def _confirmation_blocks(text: str) -> list[dict]:
             ],
         },
     ]
-
-
-@slack_app.event("message")
-def handle_dm(event, client):
-    subtype      = event.get("subtype")
-    bot_id       = event.get("bot_id")
-    channel_type = event.get("channel_type")
-    logger.info("message event: channel_type=%s subtype=%s bot_id=%s",
-                channel_type, subtype, bool(bot_id))
-
-    if bot_id or subtype or channel_type not in ("im", "mpim"):
-        return
-
-    # Post the placeholder immediately in the event handler (~200 ms) so the
-    # user gets instant feedback even if all pool workers are busy.
-    channel        = event["channel"]
-    placeholder_ts = None
-    try:
-        resp = client.chat_postMessage(channel=channel,
-                                       text="⏳ Searching the knowledge base...")
-        placeholder_ts = resp.get("ts")
-    except Exception:
-        pass
-
-    _pool.submit(_process_dm, event, client, placeholder_ts)
 
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
@@ -776,41 +713,6 @@ def handle_remind_dismiss(ack, body, client):
         client.chat_delete(channel=channel, ts=ts)
     except Exception as e:
         logger.warning("Could not dismiss message: %s", e)
-
-
-# ── Feedback action handlers ──────────────────────────────────────────────────
-
-@slack_app.action("feedback_positive")
-@slack_app.action("feedback_negative")
-def handle_feedback(ack, body, client):
-    ack()
-    action      = body["actions"][0]
-    feedback_id = action["value"]
-    user_id     = body["user"]["id"]
-    rating      = "positive" if action["action_id"] == "feedback_positive" else "negative"
-    feedback_store.rate(feedback_id, user_id, rating)
-
-    try:
-        channel = body["container"]["channel_id"]
-        ts      = body["container"]["message_ts"]
-        original_blocks = body.get("message", {}).get("blocks", [])
-        answer_text = next(
-            (b.get("text", {}).get("text", "") for b in original_blocks if b.get("type") == "section"),
-            "",
-        )
-        emoji = "👍" if rating == "positive" else "👎"
-        client.chat_update(
-            channel=channel, ts=ts,
-            text=answer_text,
-            blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": answer_text}},
-                {"type": "context", "elements": [
-                    {"type": "mrkdwn", "text": f"{emoji} Feedback recorded — thank you!"}
-                ]},
-            ],
-        )
-    except Exception as e:
-        logger.warning("Could not update feedback message: %s", e)
 
 
 # ── startup ───────────────────────────────────────────────────────────────────
