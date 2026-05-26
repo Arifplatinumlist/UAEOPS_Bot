@@ -19,9 +19,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Knowledge base is optional — bot still handles reminders without Supabase
+# Knowledge base is optional — bot still handles reminders without Notion
 try:
     import knowledge_base
+    if not os.environ.get("NOTION_TOKEN"):
+        raise RuntimeError("NOTION_TOKEN not set")
     _KB_AVAILABLE = True
 except Exception as _kb_err:
     logger.warning("Knowledge base unavailable (%s). Q&A disabled, reminders still work.", _kb_err)
@@ -296,7 +298,13 @@ def _handle_remind_request(event, say, client):
     except Exception as e:
         logger.warning("Could not get permalink: %s", e)
 
-    count = reminder_store.count_for_message(user_id, ref_ts)
+    try:
+        count = reminder_store.count_for_message(user_id, ref_ts)
+    except Exception as e:
+        logger.error("Could not check reminder count (Supabase error): %s", e)
+        say(text="⚠️ Reminders are temporarily unavailable — the database isn't reachable. Please ask an admin to check the `SUPABASE_SERVICE_KEY` in Railway.", thread_ts=event_ts)
+        return
+
     if count >= reminder_store.MAX_REMINDERS:
         say(
             text=f"You've already set the maximum of {reminder_store.MAX_REMINDERS} reminders for this message.",
