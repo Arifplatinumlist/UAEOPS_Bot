@@ -345,11 +345,17 @@ def handle_mention(event, say, client):
             say("Hi! Ask me anything.", thread_ts=event["ts"])
             return
 
-        client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        try:
+            client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        except Exception:
+            pass
         try:
             say(text=_qa_answer(channel, clean), thread_ts=event["ts"])
         finally:
-            client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+            try:
+                client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
@@ -370,11 +376,17 @@ def handle_dm(event, say, client):
             return
 
         channel = event["channel"]
-        client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        try:
+            client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+        except Exception:
+            pass
         try:
             say(text=_qa_answer(channel, question))
         finally:
-            client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+            try:
+                client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
