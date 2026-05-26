@@ -335,7 +335,10 @@ def handle_mention(event, say, client):
         channel   = event["channel"]
         bot_uid   = _get_bot_uid(client)
         raw_text  = event.get("text", "")
-        clean     = raw_text.replace(f"<@{bot_uid}>", "").strip()
+        # Strip <@UID> and mobile's <@UID|name> format
+        clean = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
+        logger.info("app_mention: channel=%s channel_type=%s clean=%r",
+                    channel, event.get("channel_type"), clean[:120])
 
         if _is_remind_request(clean):
             _handle_remind_request(event, say, client)
@@ -368,7 +371,14 @@ def handle_mention(event, say, client):
 @slack_app.event("message")
 def handle_dm(event, say, client):
     try:
-        if event.get("bot_id") or event.get("subtype") or event.get("channel_type") != "im":
+        subtype      = event.get("subtype")
+        bot_id       = event.get("bot_id")
+        channel_type = event.get("channel_type")
+        logger.info("message event: channel_type=%s subtype=%s bot_id=%s",
+                    channel_type, subtype, bool(bot_id))
+
+        # Accept 1-to-1 DMs (im) and multi-party DMs (mpim)
+        if bot_id or subtype or channel_type not in ("im", "mpim"):
             return
 
         question = event.get("text", "").strip()
