@@ -1,7 +1,7 @@
 # UAEOPS Bot — Incident Report & Fix Log
 
 > All known bugs, root causes, and fixes. Used by the bot as a troubleshooting knowledge base.
-> Last updated: May 26, 2026 (INC-020)
+> Last updated: May 26, 2026 (INC-021)
 
 ---
 
@@ -275,6 +275,22 @@ with ThreadPoolExecutor(max_workers=min(len(pages), 5)) as ex:
 
 ---
 
+## INC-021 — No Feedback When Sending Multiple Messages Quickly
+
+**Symptom:** When messages were sent faster than the bot could reply (rapid-fire questions), later messages queued silently — no ⏳ placeholder, no reply, nothing visible in Slack. Users assumed the bot had crashed.  
+**Root cause:** The "⏳ Searching the knowledge base..." placeholder was posted *inside* the `ThreadPoolExecutor` worker, not in the Slack event handler. With 4 workers and each Q&A taking 15–20 seconds, a 5th message would queue behind busy workers with zero user-visible acknowledgment until a worker freed up.  
+**Fix:**
+1. Move `client.chat_postMessage("⏳ Searching...")` into the event handler itself (`handle_dm`, `handle_mention`) — takes ~200 ms, safe in the receive thread.
+2. Pass the resulting `placeholder_ts` into `_pool.submit(...)` so the worker only does the slow Notion + Claude work.
+3. Bump thread pool from 4 → 8 workers to handle more concurrency.
+
+Users now see ⏳ within ~200 ms of sending any message, regardless of how many are queued behind it.
+
+**Files:** `app.py` → `handle_dm`, `handle_mention`, `_process_dm`, `_process_mention`  
+**Status:** ✅ Resolved
+
+---
+
 ## INC-020 — Bot Completely Ignores All Messages After First Response
 
 **Symptom:** Bot answered the first question correctly. Every subsequent message in the same DM was silently ignored — no "⏳" placeholder, no reply, no Railway log entry for the question.  
@@ -320,3 +336,4 @@ except Exception:
 | No events at all, bot completely silent | `im:read` scope missing | Slack App → OAuth & Permissions → add `im:read` → Reinstall → update SLACK_BOT_TOKEN in Railway |
 | Bot ignores all messages after first reply | History corruption in `_qa_answer` | Fixed in INC-020 — Claude API failure now pops orphaned history entry |
 | Bot doesn't respond from mobile @mention | Mobile mention format `<@UID\|name>` not matched | Fixed in INC-016 — regex handles both desktop and mobile formats |
+| No ⏳ feedback when sending messages quickly | Placeholder posted in pool worker, not event handler | Fixed in INC-021 — placeholder now posted before `_pool.submit()` |
