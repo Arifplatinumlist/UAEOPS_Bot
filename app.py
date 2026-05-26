@@ -215,9 +215,9 @@ def _schedule(reminder: dict):
 
 
 def _load_pending_reminders():
-    """On startup, reschedule any pending reminders from the JSON file."""
+    """On startup, reschedule any pending reminders from Supabase."""
     pending = reminder_store.get_pending()
-    logger.info("Reloading %d pending reminder(s) from file", len(pending))
+    logger.info("Reloading %d pending reminder(s) from database", len(pending))
     for r in pending:
         _schedule(r)
 
