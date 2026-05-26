@@ -384,6 +384,24 @@ def handle_dm(event, say, client):
             pass
 
 
+def _confirmation_blocks(text: str) -> list[dict]:
+    """Confirmation message with a dismiss button so users can clean up the thread."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✕ Dismiss"},
+                    "action_id": "remind_dismiss",
+                    "value": "dismiss",
+                }
+            ],
+        },
+    ]
+
+
 # ── Reminder action handlers ───────────────────────────────────────────────────
 
 @slack_app.action("remind_preset_30m")
@@ -413,21 +431,14 @@ def handle_remind_preset(ack, body, respond, client):
 
         num   = reminder["reminder_number"]
         total = reminder_store.MAX_REMINDERS
+        conf_text = (
+            f"✅ Got it! I'll remind you on *{_format_dt(remind_at)}*.\n"
+            f"_Reminder {num}/{total} for this message._"
+        )
         respond(
             replace_original=True,
-            text=f"✅ Reminder set!",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            f"✅ Got it! I'll remind you on *{_format_dt(remind_at)}*.\n"
-                            f"_Reminder {num}/{total} for this message._"
-                        ),
-                    },
-                }
-            ],
+            text=conf_text,
+            blocks=_confirmation_blocks(conf_text),
         )
     except ValueError as e:
         respond(replace_original=False, text=str(e))
@@ -529,7 +540,7 @@ def handle_remind_custom_submit(ack, body, client):
             f"✅ Got it! I'll remind you on *{_format_dt(parsed)}*.\n"
             f"_Reminder {num}/{total} for this message._"
         )
-        conf_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": conf_text}}]
+        conf_blocks = _confirmation_blocks(conf_text)
 
         picker_ts = ctx.get("picker_ts")
         if picker_ts:
@@ -567,10 +578,7 @@ def handle_remind_done(ack, respond, body):
     respond(
         replace_original=True,
         text="All done! ✅",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "All done! ✅ Reminder marked as complete."},
-        }],
+        blocks=_confirmation_blocks("All done! ✅ Reminder marked as complete."),
     )
 
 
@@ -614,6 +622,17 @@ def handle_remind_again(ack, respond, body, client):
         text="⏰ When should I remind you again?",
         blocks=_time_picker_blocks(ctx, count),
     )
+
+
+@slack_app.action("remind_dismiss")
+def handle_remind_dismiss(ack, body, client):
+    ack()
+    try:
+        channel = body["container"]["channel_id"]
+        ts      = body["container"]["message_ts"]
+        client.chat_delete(channel=channel, ts=ts)
+    except Exception as e:
+        logger.warning("Could not dismiss message: %s", e)
 
 
 # ── startup ───────────────────────────────────────────────────────────────────
