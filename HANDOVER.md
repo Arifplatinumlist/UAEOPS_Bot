@@ -272,10 +272,16 @@ After regenerating: update all Railway environment variables (Variables tab → 
 ## 13. Outstanding Tasks
 
 1. **🔴 Rotate all credentials** (Section 12) — highest priority
-2. **🔴 Add `NOTION_TOKEN` to Railway** — Q&A is disabled until this is set; reminders work without it
-3. **🟡 Review and approve `DRAFT_README.md`** — once approved, replace `README.md` with it
-4. **🟡 Populate Notion knowledge base** — connect Notion pages to the bot integration so Q&A returns real answers
+2. **🟡 Review and approve `DRAFT_README.md`** — once approved, replace `README.md` with it
+3. **🟡 Add `reactions:write` scope to Slack app** — bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add `reactions:write` → Reinstall App → update `SLACK_BOT_TOKEN` in Railway
+4. **🟡 Verify Q&A answers** — Notion pages are connected (Document Hub database + 3 child pages auto-connected). Test with real questions about ops task channel, alerts, permit guidelines
 5. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
+
+**Completed this session:**
+- ✅ `NOTION_TOKEN` added to Railway — Q&A enabled
+- ✅ Notion knowledge base connected — Document Hub database (uaeops-tasks onboarding, Alert-monitor-uae onboarding, Permit guidelines)
+- ✅ Dismiss button on all reminder confirmations (`42332b6`)
+- ✅ Q&A crash fixed — reactions:write scope error now caught silently (`a492764`)
 
 ---
 
@@ -292,25 +298,43 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | Custom time reminder goes to DM | Old bug — fixed in commit `84e731a` | Already resolved |
 | Reminders lost after redeploy | Old bug (reminders.json on ephemeral FS) | Already resolved — storage is now Supabase |
 | Q&A says "knowledge base not configured" | `NOTION_TOKEN` not set in Railway | Add `NOTION_TOKEN` to Railway env vars + Deploy |
-| Q&A finds nothing | No Notion pages connected to integration | Open each page → `···` → Add connections → UAEOPS Bot |
+| Q&A finds nothing | No Notion pages connected to integration | Connect the **database** in Notion (e.g. Document Hub) → bot auto-gets all child pages |
+| Q&A crashes with "Something went wrong" | `reactions:write` scope missing on Slack app | Fixed in `a492764` — reactions fail silently now |
+| No 🤔 emoji while bot is thinking | `reactions:write` scope not granted | Add scope in Slack App → OAuth & Permissions → Reinstall App |
 | Build takes 5+ minutes | Legacy — only if sentence-transformers snuck back in | Check requirements.txt — it should NOT be there |
 
 ---
 
 ## 15. Live Status (May 26, 2026)
 
-- **Latest commit:** `84e731a` — Fix custom time reminder: update original message in-place
-- **Railway:** Auto-deployed on push to main ✅
-- **Supabase:** `SUPABASE_SERVICE_KEY` updated to correct service_role JWT ✅
-- **NOTION_TOKEN:** ⚠️ Needs to be added to Railway for Q&A to work
-- **Reminders:** ✅ Persist across redeployments (stored in Supabase)
+- **Latest commit:** `a492764` — Fix Q&A crash: wrap reactions_add/remove in try/except
+- **Railway:** Online ✅ — auto-deploys on every push to main
+- **Supabase:** `SUPABASE_SERVICE_KEY` set to correct service_role JWT ✅
+- **NOTION_TOKEN:** ✅ Set in Railway
+- **Notion pages connected:** ✅ Document Hub database (uaeops-tasks onboarding, Alert-monitor-uae onboarding, Permit guidelines)
+- **Reminders:** ✅ Persist across redeployments (Supabase storage)
+- **Q&A:** ✅ Live — Notion search working, answers via Claude
+- **Dismiss button:** ✅ All confirmation messages have ✕ Dismiss button
+
+**All commits this session (oldest → newest):**
+| Commit | Change |
+|--------|--------|
+| `be60a46` | Migrate reminders: JSON file → Supabase |
+| `3123998` | Startup resilience: catch Supabase errors |
+| `bba3c74` | Specific error messages instead of generic "Something went wrong" |
+| `2ec0ede` | Add Supabase error body to logs |
+| `84e731a` | Fix custom time reminder: update message in-place |
+| `4ef015a` | Rewrite HANDOVER.md for current architecture |
+| `42332b6` | Add ✕ Dismiss button to all reminder confirmations |
+| `a492764` | Fix Q&A crash: reactions:write scope missing — fail silently |
 
 **To test reminders:**
-1. In any Slack channel: mention `@UAEOPS_Bot remind me`
+1. In any Slack channel: `@UAEOPS_Bot remind me`
 2. Pick a preset time or click "Custom time..."
-3. Confirm the picker message updates in-place with `✅ Got it! I'll remind you on...`
-4. Wait for the scheduled time → check your DMs
+3. Picker message updates in-place → `✅ Got it! I'll remind you on...` with a ✕ Dismiss button
+4. Wait for scheduled time → DM arrives with link back to original message
 
-**To test Q&A (requires NOTION_TOKEN):**
-1. Connect at least one Notion page to the bot integration
-2. In Slack: `@UAEOPS_Bot <question about your Notion content>`
+**To test Q&A:**
+1. In Slack: `@UAEOPS_Bot <question>` or DM the bot directly
+2. Bot searches Notion → answers via Claude
+3. If it returns "couldn't find anything" — check pages are connected in Notion (open page → `···` → Connections → UAEOPS_bot)
