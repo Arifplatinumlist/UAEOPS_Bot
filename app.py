@@ -513,6 +513,12 @@ def handle_remind_custom_submit(ack, body, client):
         body["view"]["state"]["values"]["custom_time"]["time_input"]["value"] or ""
     ).strip()
 
+    # Ack immediately — Slack requires a response within 3 seconds.
+    # dateparser can be slow, so we ack first and handle errors via chat message.
+    ack()
+
+    ctx     = json.loads(body["view"]["private_metadata"])
+
     parsed = dateparser.parse(
         user_input,
         settings={
@@ -523,15 +529,12 @@ def handle_remind_custom_submit(ack, body, client):
         },
     )
     if not parsed:
-        ack(
-            response_action="errors",
-            errors={"custom_time": f"Couldn't understand '{user_input}'. Try 'tomorrow 3pm' or 'in 2 hours'."},
+        client.chat_postMessage(
+            channel=ctx["channel_id"],
+            text=f"⚠️ Couldn't understand *'{user_input}'*. Try `tomorrow 3pm`, `in 2 hours`, or `next Monday 9am`.",
+            thread_ts=ctx.get("thread_ts"),
         )
         return
-
-    ack()
-
-    ctx     = json.loads(body["view"]["private_metadata"])
     user_id = body["user"]["id"]
 
     try:
