@@ -350,6 +350,7 @@ def _process_mention(event, say, client, placeholder_ts):
         logger.info("app_mention: channel=%s clean=%r", channel, clean[:80])
 
         if _is_remind_request(clean):
+            # Delete the channel placeholder before posting the thread time picker
             if placeholder_ts:
                 try:
                     client.chat_delete(channel=channel, ts=placeholder_ts)
@@ -366,28 +367,20 @@ def _process_mention(event, say, client, placeholder_ts):
                 except Exception:
                     pass
             else:
-                client.chat_postMessage(channel=channel, text="Hi! Ask me anything.",
-                                        thread_ts=event["ts"], reply_broadcast=True)
+                client.chat_postMessage(channel=channel, text="Hi! Ask me anything.")
             return
 
         answer = _qa_answer(channel, clean)
 
-        # Delete the thread-only placeholder, then post the answer fresh with
-        # reply_broadcast=True so it appears in the main channel feed AND thread.
-        # (chat_update does not propagate to the channel-feed broadcast copy,
-        # so we must delete + repost rather than update.)
+        # Update the placeholder in-place — no thread_ts, so the answer appears
+        # as a regular channel message, not buried in a thread.
         if placeholder_ts:
             try:
-                client.chat_delete(channel=channel, ts=placeholder_ts)
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                return
             except Exception:
                 pass
-
-        client.chat_postMessage(
-            channel=channel,
-            text=answer,
-            thread_ts=event["ts"],
-            reply_broadcast=True,
-        )
+        client.chat_postMessage(channel=channel, text=answer)
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
@@ -396,8 +389,7 @@ def _process_mention(event, say, client, placeholder_ts):
             if placeholder_ts:
                 client.chat_update(channel=channel, ts=placeholder_ts, text=error_msg)
             else:
-                client.chat_postMessage(channel=channel, text=error_msg,
-                                        thread_ts=event.get("ts"), reply_broadcast=True)
+                client.chat_postMessage(channel=channel, text=error_msg)
         except Exception:
             pass
 
@@ -407,11 +399,10 @@ def handle_mention(event, say, client):
     channel        = event["channel"]
     placeholder_ts = None
     try:
-        # Post placeholder to thread only (no reply_broadcast) for instant feedback.
-        # The worker will delete this and post the answer fresh with reply_broadcast.
+        # Post placeholder directly in the channel (no thread_ts) — will be
+        # updated in-place with the answer so it appears as a normal chat message.
         resp = client.chat_postMessage(channel=channel,
-                                       text="⏳ Searching the knowledge base...",
-                                       thread_ts=event["ts"])
+                                       text="⏳ Searching the knowledge base...")
         placeholder_ts = resp.get("ts")
     except Exception:
         pass
