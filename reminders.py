@@ -115,5 +115,7 @@ def get_pending() -> list[dict]:
         params={"status": "eq.pending"},
         timeout=10,
     )
+    if not resp.ok:
+        logger.error("Supabase get_pending failed %s: %s", resp.status_code, resp.text)
     resp.raise_for_status()
     return resp.json()
