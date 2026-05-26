@@ -10,9 +10,9 @@
 
 UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 
-1. **Reminders** — Users right-click any Slack message → "Add Reminder" → bot shows a time-picker (30m / 1h / 4h / Tomorrow 9am). At the scheduled time, the bot sends a DM quoting the original message with a link back to it.
+1. **Reminders** — Mention `@UAEOPS_Bot remind me` in any channel. The bot shows a time-picker (30 min / 1 hour / 4 hours / Tomorrow 9am / Custom). At the scheduled time, the bot sends a DM with a link back to the original message. Reminders survive redeployments — they are stored in Supabase.
 
-2. **Knowledge Base Q&A** — Users mention `@UAEOPS_Bot` with a question. The bot searches a Supabase vector database (pgvector) for relevant documents, then passes the question + context to Claude Haiku to generate an answer, and replies in the thread.
+2. **Knowledge Base Q&A** — Mention `@UAEOPS_Bot` with a question, or DM the bot directly. The bot searches your connected Notion pages and passes matching content to Claude to generate an answer, then replies in the thread.
 
 ---
 
@@ -21,12 +21,12 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 | Component | Technology |
 |-----------|-----------|
 | Bot framework | Python, Slack Bolt SDK (Socket Mode) |
-| Reminders scheduling | APScheduler with Asia/Dubai timezone |
-| Reminder storage (local dev) | `reminders.json` file |
-| Knowledge base | Supabase + pgvector (384-dim embeddings) |
-| Embeddings | `sentence-transformers` (all-MiniLM-L6-v2, local inference) |
-| AI answers | Anthropic Claude Haiku API |
+| Reminder scheduling | APScheduler (`BackgroundScheduler`, `Asia/Dubai` timezone) |
+| Reminder storage | Supabase REST API (survives Railway redeployments) |
+| Knowledge base | Notion REST API (`POST /v1/search` + block fetching) |
+| AI answers | Anthropic Claude (`claude-sonnet-4-6` default) |
 | Deployment | Railway (worker process, no HTTP port) |
+| Image size | ~200 MB (no PyTorch — sentence-transformers removed) |
 
 ---
 
@@ -36,11 +36,15 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 - **Local path (Mac):** `~/UAEOPS_Bot`
 - **Branch:** `main` (Railway auto-deploys on every push)
 - **Key files:**
-  - `app.py` — main bot application (all Slack event handlers, reminder logic, Q&A logic)
-  - `reminders.py` — reminder CRUD helpers (read/write reminders.json)
-  - `requirements.txt` — Python dependencies
-  - `Procfile` — tells Railway to run `worker: python app.py`
-  - `migrations/001_create_knowledge_base.sql` — Supabase schema for documents table
+
+| File | Purpose |
+|------|---------|
+| `app.py` | All Slack event handlers, reminder logic, Q&A logic |
+| `reminders.py` | Reminder CRUD — Supabase REST API via `requests` |
+| `knowledge_base.py` | Notion search — `POST /v1/search` + block fetching |
+| `requirements.txt` | Python dependencies (no sentence-transformers, no supabase SDK) |
+| `Procfile` | `worker: python app.py` |
+| `DRAFT_README.md` | Team-facing README — drafted, awaiting review before replacing README.md |
 
 ---
 
@@ -48,15 +52,19 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 
 Set in Railway Variables tab AND in a local `.env` file for development.
 
-> ⚠️ **SECURITY WARNING:** These credentials were shared in plaintext during a Claude chat session and MUST be regenerated. See Section 11.
+> ⚠️ **SECURITY WARNING:** Several credentials were shared in plaintext during Claude chat sessions. See Section 11 for what needs rotating.
 
-| Variable | Where to get it |
-|----------|----------------|
-| `SLACK_BOT_TOKEN` | Slack App dashboard → OAuth & Permissions → Bot User OAuth Token (starts `xoxb-`) |
-| `SLACK_APP_TOKEN` | Slack App dashboard → Basic Information → App-Level Tokens (starts `xapp-`) — needs `connections:write` scope |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com → API Keys (starts `sk-ant-`) |
-| `SUPABASE_URL` | Supabase project → Settings → API → Project URL |
-| `SUPABASE_SERVICE_KEY` | Supabase project → Settings → API → service_role key |
+| Variable | Required | Where to get it |
+|----------|----------|----------------|
+| `SLACK_BOT_TOKEN` | Yes | Slack App → OAuth & Permissions → Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Yes | Slack App → Basic Information → App-Level Tokens (`xapp-...`) — needs `connections:write` scope |
+| `ANTHROPIC_API_KEY` | Yes | https://console.anthropic.com → API Keys |
+| `SUPABASE_URL` | Yes | Supabase project → Settings → API → Project URL |
+| `SUPABASE_SERVICE_KEY` | Yes | Supabase project → Settings → API → **service_role** key (the `eyJ...` JWT — NOT the `sb_publishable_` key) |
+| `NOTION_TOKEN` | Yes (for Q&A) | https://www.notion.so/my-integrations → create/select integration → copy token |
+| `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-6` |
+
+> ⚠️ **Critical:** `SUPABASE_SERVICE_KEY` must be the **service_role** JWT (starts `eyJ...`), not the new-format publishable key (starts `sb_publishable_`). Using the wrong key type causes a 401 crash loop on startup.
 
 Current Supabase project URL: `https://ryqvaouqpufdacbhosyk.supabase.co`
 
@@ -69,23 +77,20 @@ Current Supabase project URL: `https://ryqvaouqpufdacbhosyk.supabase.co`
 - **Railway service ID:** `ac97f6be-8658-4527-b71f-08b9afca0792`
 - **Direct link:** https://railway.com/project/1cd94266-60f8-4fd0-b456-473dfcfca643/service/ac97f6be-8658-4527-b71f-08b9afca0792
 - **Connected to:** GitHub `Arifplatinumlist/UAEOPS_Bot` main branch
-- **Runtime:** Python 3.13.13, detected automatically via Railpack
+- **Runtime:** Python 3.13, detected automatically via Railpack
 
 ### How deployment works
 1. Push any commit to GitHub `main` → Railway auto-triggers build
-2. Railway installs `requirements.txt` (takes ~2 min — PyTorch is large)
+2. Railway installs `requirements.txt` (~30 sec — image is ~200 MB, no PyTorch)
 3. Railway runs `python app.py` (from `Procfile` `worker:` line)
 4. Bot connects to Slack via Socket Mode — no open HTTP port needed
 
 ### How to manually re-deploy
-Go to Railway → UAEOPS_Bot service → Variables tab → make any small change → click **Deploy**
+Railway → UAEOPS_Bot service → Variables tab → make any small change → click **Deploy**
 OR: push any commit to GitHub main
 
-### Critical lesson: "Apply X changes" vs deployed
-When you add/edit variables in Railway, they show as **pending changes** (bottom bar says "Apply X changes"). The bot does NOT get the new values until you click the **Deploy** button. This was the root cause of hours of `KeyError: 'SLACK_BOT_TOKEN'` crashes.
-
-### Build time
-The Docker image is **2.7 GB** because `sentence-transformers` pulls PyTorch with CUDA. First build takes ~5 minutes. Subsequent builds are faster due to layer caching.
+### Critical: "Apply X changes" vs deployed
+When you add/edit variables in Railway, they show as **pending changes** (bottom bar says "Apply X changes"). The bot does NOT get the new values until you click the **Deploy** button.
 
 ---
 
@@ -93,84 +98,59 @@ The Docker image is **2.7 GB** because `sentence-transformers` pulls PyTorch wit
 
 ### Bug 1 — Python 3.9 type hint incompatibility
 **Error:** `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`
-**Files:** `app.py` line 53, `reminders.py` line 86
-**Cause:** `str | None` union syntax requires Python 3.10+. Broke on older environments.
-**Fix:**
-```python
-from typing import Optional
-# Before:  _bot_uid: str | None = None
-# After:   _bot_uid: Optional[str] = None
-# Before:  def get(reminder_id: str) -> dict | None:
-# After:   def get(reminder_id: str) -> Optional[dict]:
-```
+**Cause:** `str | None` syntax requires Python 3.10+.
+**Fix:** Use `Optional[str]` from `typing` module everywhere.
 
 ### Bug 2 — Duplicate `action_id` in time-picker blocks
 **Error:** `invalid_blocks: action_id "remind_preset" already exists`
-**Cause:** All 4 preset time buttons in `_time_picker_blocks()` had the same `action_id: "remind_preset"`. Slack requires unique action_ids per message.
-**Fix:**
-```python
-# Before: "action_id": "remind_preset"
-# After:  "action_id": f"remind_preset_{preset}"
-# Results: remind_preset_30m, remind_preset_1h, remind_preset_4h, remind_preset_tomorrow_9am
-```
+**Fix:** Each preset button gets a unique ID: `remind_preset_30m`, `remind_preset_1h`, `remind_preset_4h`, `remind_preset_tomorrow_9am`.
 
 ### Bug 3 — Regex action handler silently failing
-**Error:** `Unhandled request for remind_preset_30m` (clicking time buttons did nothing)
-**Cause:** `@slack_app.action(re.compile(r"^remind_preset_"))` does NOT work in Slack Bolt Python. The regex decorator is silently ignored.
-**Fix — register each action explicitly:**
+**Error:** Clicking time buttons did nothing (`Unhandled request for remind_preset_30m`)
+**Cause:** `@slack_app.action(re.compile(...))` silently ignored in Slack Bolt Python.
+**Fix:** Register each action with an explicit decorator:
 ```python
 @slack_app.action("remind_preset_30m")
 @slack_app.action("remind_preset_1h")
 @slack_app.action("remind_preset_4h")
 @slack_app.action("remind_preset_tomorrow_9am")
-def handle_remind_preset(ack, body, respond, client):
-    ...
+def handle_remind_preset(ack, body, respond, client): ...
 ```
 
 ### Bug 4 — Timezone showing UTC instead of UAE
-**Symptom:** Reminders showed "Wednesday 27 May 2026 at 08:00 UTC" instead of local UAE time
-**Fix in `app.py`:**
+**Fix:**
 ```python
-from datetime import timezone, timedelta
 UAE_TZ = timezone(timedelta(hours=4))  # UTC+4, no DST
-
 scheduler = BackgroundScheduler(timezone="Asia/Dubai")
-
-# In _preset_to_dt():
 now_uae = datetime.now(UAE_TZ)
-
-# In _format_dt():
-return dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
+dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
 ```
 
 ### Bug 5 — Bot running but not responding to any Slack messages
-**Cause:** Event Subscriptions were missing from the Slack App configuration. The bot connected fine but Slack never sent it any events.
-**Fix:** Slack App dashboard → Event Subscriptions → Subscribe to bot events → add:
-- `app_mention`
-- `message.im`
+**Cause:** Event Subscriptions missing from Slack App config.
+**Fix:** Slack App → Event Subscriptions → add `app_mention` + `message.im`.
 
-### Bug 6 — Multiple bot processes running simultaneously
-**Symptom:** Bot sends duplicate messages, confusion about which instance is handling events
-**Cause:** `pkill -f "python3 app.py"` matched wrong path — old instances kept running
-**Fix:**
-```bash
-ps aux | grep app.py    # find all running PIDs
-kill <PID1> <PID2> ...  # kill each one
-```
+### Bug 6 — Railway crash: `KeyError: 'SLACK_BOT_TOKEN'`
+**Cause:** Variables saved in Railway but Deploy button never clicked.
+**Fix:** Variables tab → look for bottom bar "Apply X changes" → click purple **Deploy**.
 
-### Bug 7 — Railway crash: `KeyError: 'SLACK_BOT_TOKEN'`
-**Symptom:** Every Railway deployment crashed immediately with `KeyError: 'SLACK_BOT_TOKEN'`
-**Cause:** Variables were typed into Railway's Variables tab but the **Deploy button was never clicked**. They sat as "5 pending changes" and were never injected into the running container.
-**Fix:** Railway → Variables tab → look for the bottom bar that says "Apply X changes" → click the purple **Deploy** button.
+### Bug 7 — Reminders not firing after Railway redeploy
+**Cause:** `reminders.json` was stored on Railway's ephemeral filesystem. Every redeploy wiped it, losing all pending reminders.
+**Fix:** Migrated reminder storage to Supabase REST API. Reminders now survive redeployments.
 
-### Bug 8 — Git push rejected
-**Error:** `! [rejected] main -> main (fetch first)`
-**Cause:** A PR (HANDOVER.md) had been merged to GitHub main without being pulled locally first.
-**Fix:** `git pull origin main --rebase` then `git push origin main`
+### Bug 8 — Railway crash loop (401 Unauthorized on startup)
+**Cause:** `SUPABASE_SERVICE_KEY` was set to the new-format `sb_publishable_...` key instead of the service_role JWT (`eyJ...`). The publishable key is not a valid auth credential for the REST API.
+**Fix:** Replace with the correct service_role JWT from Supabase → Settings → API → service_role.
+**Resilience fix:** `_load_pending_reminders()` wrapped in try/except so the bot stays up even if Supabase is unreachable at startup.
 
-### Bug 9 — `ModuleNotFoundError: No module named 'slack_bolt'`
-**Cause:** Running `app.py` without first installing dependencies.
-**Fix:** `pip3 install -r requirements.txt`
+### Bug 9 — Generic "Something went wrong" in Slack
+**Two causes fixed:**
+1. `NOTION_TOKEN` missing → `RuntimeError` mid-request with no user-facing info. Fixed by testing `NOTION_TOKEN` at startup and setting `_KB_AVAILABLE = False` with a log warning.
+2. Supabase 401 in `count_for_message()` had no exception handler. Fixed by adding try/except with an actionable error message to the user.
+
+### Bug 10 — Custom time reminder sent DM instead of updating message
+**Cause:** Preset buttons use `respond(replace_original=True)` which updates the time picker in-place. Custom time uses a modal submission which can't use `respond` — it was calling `chat_postMessage` to the user DM instead.
+**Fix:** Capture the time picker message `ts` when the "Custom time..." button is clicked, store it in the modal's `private_metadata`, then use `client.chat_update()` on submit to replace the picker message in-place.
 
 ---
 
@@ -182,18 +162,58 @@ Required settings in https://api.slack.com/apps:
 |---------|---------------|
 | Socket Mode | **Enabled** |
 | App-Level Token scope | `connections:write` |
-| Bot Token scopes | `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `reactions:read`, `users:read` |
+| Bot Token scopes | `app_mentions:read`, `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read` |
 | Event Subscriptions | `app_mention`, `message.im` |
-| Interactivity & Shortcuts | **Enabled** — required for button clicks |
-| Message Shortcut | Name: "Add Reminder", Callback ID: `add_reminder` |
+| Interactivity & Shortcuts | **Enabled** — required for button clicks and modals |
 
 ---
 
-## 8. n8n Alternative (Built But Not Active)
+## 8. Supabase Schema
 
-During this session, complete n8n equivalents of the bot were designed and saved. These are an alternative deployment strategy — useful if you want zero-server operation via n8n Cloud.
+### Reminders table
+Used by the Python bot to persist reminders across Railway redeployments.
 
-### Files (saved to iCloud)
+```sql
+CREATE TABLE reminders (
+  id              uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id         text NOT NULL,
+  channel_id      text NOT NULL,
+  message_ts      text NOT NULL,
+  thread_ts       text,
+  permalink       text,
+  message_text    text,
+  remind_at       timestamptz NOT NULL,
+  status          text DEFAULT 'pending',
+  reminder_number int  DEFAULT 1,
+  created_at      timestamptz DEFAULT now()
+);
+CREATE INDEX idx_reminders_status_remind_at ON reminders (status, remind_at);
+CREATE INDEX idx_reminders_user_message    ON reminders (user_id, message_ts);
+```
+
+`status` values: `pending` → `sent` or `done`.
+`reminder_number` tracks which reminder (1, 2, or 3) this is for a given message (max 3 per message).
+
+---
+
+## 9. Notion Knowledge Base Setup
+
+The bot searches Notion pages directly via API — no ingestion, no embeddings, no sync needed.
+
+1. Go to https://www.notion.so/my-integrations → **New integration** → copy the Internal Integration Token
+2. Set it as `NOTION_TOKEN` in Railway environment variables
+3. For **each Notion page** you want the bot to search: open the page → `···` menu → **Add connections** → pick the UAEOPS Bot integration
+
+> The bot only sees pages you explicitly connect. It does not read your entire Notion workspace.
+
+If `NOTION_TOKEN` is missing or not set, the bot logs a warning and disables Q&A — reminders still work.
+
+---
+
+## 10. n8n Alternative (Built But Not Active)
+
+Complete n8n equivalents were designed as a backup. Saved to iCloud:
+
 ```
 ~/Library/Mobile Documents/com~apple~CloudDocs/Claude/
 ├── uaeops_n8n_handler.json       # 16-node Slack event handler workflow
@@ -201,117 +221,41 @@ During this session, complete n8n equivalents of the bot were designed and saved
 └── uaeops_reminders_table.sql    # Supabase SQL for reminders table
 ```
 
-### n8n handler workflow summary
-Triggered by Slack Events API (webhook mode, not Socket Mode):
-- Route (Switch) → 4 branches: URL challenge / remind shortcut / Q&A mention / button click
-- **Remind branch:** get permalink → build time-picker blocks → post to Slack
-- **Q&A branch:** ACK → ilike text search in Supabase → call Anthropic Claude → post reply
-- **Button branch:** calculate UAE time → store in Supabase `reminders` table → confirm to user
-
-### n8n reminders workflow summary
-Schedule trigger (every 1 minute):
-- GET from Supabase: `reminders` where `status = pending` AND `remind_at <= now()`
-- POST DM to Slack
-- PATCH status to `sent`
-
-### Why Railway was chosen over n8n
-- Python bot already working end-to-end with richer logic
-- Socket Mode (no public webhook URL needed) is simpler
-- n8n requires switching to Slack webhook mode (public URL)
-- n8n free tier has execution count limits
-
-### To activate n8n instead
-1. Run `uaeops_reminders_table.sql` in Supabase SQL editor
-2. Import both JSONs into n8n Cloud
-3. Set credentials in n8n: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SLACK_BOT_TOKEN`, `ANTHROPIC_API_KEY`
-4. In Slack App: disable Socket Mode, set Events webhook URL to n8n webhook URL
-5. Pause/delete the Railway service
+Railway (Python bot) was chosen because: Socket Mode (no public URL needed), richer logic already working, and n8n free tier has execution limits.
 
 ---
 
-## 9. Supabase Schema
-
-### Knowledge base (`documents` table)
-```sql
--- migrations/001_create_knowledge_base.sql
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE documents (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  source     text,
-  title      text,
-  content    text,
-  metadata   jsonb,
-  embedding  vector(384),   -- all-MiniLM-L6-v2 dimensions
-  created_at timestamptz DEFAULT now()
-);
-
--- Vector similarity search function
-CREATE OR REPLACE FUNCTION search_documents(
-  query_embedding vector(384),
-  match_count     int DEFAULT 5,
-  match_threshold float DEFAULT 0.7
-)
-RETURNS TABLE (id uuid, source text, title text, content text, similarity float)
-...
-```
-
-> The documents table currently has NO data. Q&A will work but the bot will say "no relevant context found." You need to ingest documents using the loaders in the repo (pypdf, python-docx, beautifulsoup4).
-
-### Reminders table (for n8n only — Python bot uses `reminders.json`)
-```sql
--- uaeops_reminders_table.sql (in iCloud)
-CREATE TABLE reminders (
-  id           uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id      text NOT NULL,
-  channel_id   text NOT NULL,
-  message_ts   text NOT NULL,
-  thread_ts    text,
-  permalink    text,
-  message_text text,
-  remind_at    timestamptz NOT NULL,
-  status       text DEFAULT 'pending',
-  created_at   timestamptz DEFAULT now()
-);
-CREATE INDEX ON reminders (status, remind_at);
-```
-
----
-
-## 10. Local Development Setup
+## 11. Local Development Setup
 
 ```bash
 # Clone the repo
 git clone https://github.com/Arifplatinumlist/UAEOPS_Bot.git
 cd UAEOPS_Bot
 
-# Install dependencies (takes 2-3 min, PyTorch is large)
+# Install dependencies (~30 sec — no PyTorch)
 pip3 install -r requirements.txt
 
-# Create .env file with your credentials
+# Create .env file
 cat > .env << 'EOF'
 SLACK_APP_TOKEN=xapp-...
 SLACK_BOT_TOKEN=xoxb-...
 ANTHROPIC_API_KEY=sk-ant-...
 SUPABASE_URL=https://ryqvaouqpufdacbhosyk.supabase.co
-SUPABASE_SERVICE_KEY=...
+SUPABASE_SERVICE_KEY=eyJ...   # service_role JWT, NOT sb_publishable_
+NOTION_TOKEN=secret_...
 EOF
 
 # Run locally
 python3 app.py
-
-# Stop cleanly (find and kill if terminal closed)
-ps aux | grep app.py
-kill <PID>
 ```
 
-> `.env`, `reminders.json`, and `bot.log` are all in `.gitignore`. Never commit them.
+> `.env` is in `.gitignore`. Never commit it.
 
 ---
 
-## 11. Security — Credentials to Rotate
+## 12. Security — Credentials to Rotate
 
-All of these were typed into a Claude chat session as plaintext. Treat them as compromised:
+The following were shared in plaintext in Claude chat sessions. Treat them as compromised:
 
 | Token | How to Regenerate |
 |-------|------------------|
@@ -319,22 +263,23 @@ All of these were typed into a Claude chat session as plaintext. Treat them as c
 | `SLACK_APP_TOKEN` | Slack App → Basic Information → App-Level Tokens → Revoke + create new |
 | `ANTHROPIC_API_KEY` | https://console.anthropic.com → API Keys → disable old, create new |
 | `GitHub PAT` | https://github.com/settings/tokens → Delete + create new |
+| `SUPABASE_SERVICE_KEY` | Supabase → Settings → API → Reveal service_role → rotate |
 
-After regenerating: update all 5 Railway environment variables (Variables tab → edit → Deploy).
-
----
-
-## 12. Outstanding Tasks
-
-1. **🔴 Rotate all credentials** (Section 11) — highest priority
-2. **🟡 Stop old local bot** — run `ps aux | grep app.py` on your Mac, kill any remaining processes
-3. **🟡 Populate knowledge base** — the `documents` table is empty; ingest your ops documents via the loaders already in requirements.txt
-4. **🟢 n8n workflows** (optional) — JSON files are ready in iCloud if you ever want to switch
-5. **🟢 Slim Docker image** (optional) — replace `sentence-transformers` with Anthropic's embedding API to cut build time from 5 min to ~30 sec
+After regenerating: update all Railway environment variables (Variables tab → edit → Deploy).
 
 ---
 
-## 13. Troubleshooting Quick Reference
+## 13. Outstanding Tasks
+
+1. **🔴 Rotate all credentials** (Section 12) — highest priority
+2. **🔴 Add `NOTION_TOKEN` to Railway** — Q&A is disabled until this is set; reminders work without it
+3. **🟡 Review and approve `DRAFT_README.md`** — once approved, replace `README.md` with it
+4. **🟡 Populate Notion knowledge base** — connect Notion pages to the bot integration so Q&A returns real answers
+5. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
+
+---
+
+## 14. Troubleshooting Quick Reference
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -342,32 +287,30 @@ After regenerating: update all 5 Railway environment variables (Variables tab �
 | Bot online but ignores all messages | Event subscriptions not configured | Slack App → Event Subscriptions → add `app_mention` + `message.im` |
 | `invalid_blocks` Slack error | Duplicate action_ids on buttons | Use `f"remind_preset_{preset}"` for unique IDs |
 | Clicking time button does nothing | Regex action handler silently fails | Use 4 explicit `@slack_app.action("remind_preset_X")` decorators |
-| Bot replies twice to everything | Multiple processes running | `ps aux | grep app.py` → kill duplicates |
-| `git push` rejected | Remote has newer commits | `git pull origin main --rebase` then push |
-| Build takes 5+ minutes | PyTorch/sentence-transformers (2.7 GB image) | Normal first-build; subsequent builds use cache |
-| `TypeError` on `str | None` | Python < 3.10 syntax | Use `Optional[str]` from `typing` module |
-| Q&A replies with no context | Documents table is empty | Ingest documents into Supabase `documents` table |
+| Startup 401 crash loop | Wrong Supabase key type | Use service_role JWT (`eyJ...`), not `sb_publishable_` key |
+| "Something went wrong" in Slack | Missing `NOTION_TOKEN` or Supabase unreachable | Check Railway logs; set `NOTION_TOKEN`; verify `SUPABASE_SERVICE_KEY` |
+| Custom time reminder goes to DM | Old bug — fixed in commit `84e731a` | Already resolved |
+| Reminders lost after redeploy | Old bug (reminders.json on ephemeral FS) | Already resolved — storage is now Supabase |
+| Q&A says "knowledge base not configured" | `NOTION_TOKEN` not set in Railway | Add `NOTION_TOKEN` to Railway env vars + Deploy |
+| Q&A finds nothing | No Notion pages connected to integration | Open each page → `···` → Add connections → UAEOPS Bot |
+| Build takes 5+ minutes | Legacy — only if sentence-transformers snuck back in | Check requirements.txt — it should NOT be there |
 
 ---
 
-## 14. Live Status (May 26, 2026)
+## 15. Live Status (May 26, 2026)
 
-```
-Deployment ID:  3d6bad65-d4d2-4e00-859f-79694564fdeb
-Railway status: Active ✅
-Slack status:   Online (green dot) ✅
+- **Latest commit:** `84e731a` — Fix custom time reminder: update original message in-place
+- **Railway:** Auto-deployed on push to main ✅
+- **Supabase:** `SUPABASE_SERVICE_KEY` updated to correct service_role JWT ✅
+- **NOTION_TOKEN:** ⚠️ Needs to be added to Railway for Q&A to work
+- **Reminders:** ✅ Persist across redeployments (stored in Supabase)
 
-Startup log:
-  Starting Container
-  INFO:__main__: Starting UAEOPS Bot — KB available: True
-  INFO:apscheduler.scheduler: Scheduler started
-  INFO:__main__: Reloading 0 pending reminder(s) from file
-  INFO:__main__: Bot ready. Connecting to Slack via Socket Mode...
-  INFO:slack_bolt.App: A new session has been established
-  INFO:slack_bolt.App: ⚡ Bolt app is running!
-  INFO:slack_bolt.App: Starting to receive messages from a new connection
-```
+**To test reminders:**
+1. In any Slack channel: mention `@UAEOPS_Bot remind me`
+2. Pick a preset time or click "Custom time..."
+3. Confirm the picker message updates in-place with `✅ Got it! I'll remind you on...`
+4. Wait for the scheduled time → check your DMs
 
-**To test right now:**
-- Go to Slack → mention `@UAEOPS_Bot` with any question
-- Right-click any message → More message shortcuts → Add Reminder → pick a time
+**To test Q&A (requires NOTION_TOKEN):**
+1. Connect at least one Notion page to the bot integration
+2. In Slack: `@UAEOPS_Bot <question about your Notion content>`
