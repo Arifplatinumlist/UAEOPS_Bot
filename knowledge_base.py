@@ -53,6 +53,12 @@ def _block_to_text(block: dict) -> str:
         text = f"{'[x]' if content.get('checked') else '[ ]'} {text}"
     elif btype == "code":
         text = f"`{text}`"
+    elif btype == "image":
+        # Extract caption if present; images themselves have no rich_text
+        caption = "".join(rt.get("plain_text", "") for rt in content.get("caption", []))
+        text = f"[image: {caption}]" if caption else "[image]"
+    elif btype in ("divider", "table_of_contents"):
+        text = ""
     return text
 
 
@@ -100,6 +106,7 @@ def search(query: str, top_k: int = 5, threshold: float = 0.0) -> list[dict]:
         )
         resp.raise_for_status()
         pages = resp.json().get("results", [])
+        logger.info("Notion search %r → %d page(s) found", query, len(pages))
         if not pages:
             return []
 
@@ -110,12 +117,14 @@ def search(query: str, top_k: int = 5, threshold: float = 0.0) -> list[dict]:
             url     = page.get("url", f"https://notion.so/{page_id.replace('-', '')}")
             try:
                 content = _fetch_page_text(page_id)
-                if content.strip():
-                    results.append({
-                        "title":   title,
-                        "source":  url,
-                        "content": content[:MAX_CONTENT_PER_PAGE],
-                    })
+                # Include the page even if content is sparse (e.g. image-heavy pages)
+                if not content.strip():
+                    content = f"(This page — '{title}' — appears to contain images or non-text content. Direct the user to view it at {url})"
+                results.append({
+                    "title":   title,
+                    "source":  url,
+                    "content": content[:MAX_CONTENT_PER_PAGE],
+                })
             except Exception as e:
                 logger.warning("Could not fetch Notion page %s (%s): %s", page_id, title, e)
         return results
