@@ -59,7 +59,7 @@ When the time comes, the bot sends you a DM with a link back to the original mes
 **Rules:**
 - Maximum **3 reminders per message** per user
 - Pending reminders survive bot restarts (stored in `reminders.json`)
-- All preset times are UTC; custom time supports natural language (e.g. `tomorrow 3pm`, `in 2 hours`, `next Monday 9am`)
+- All preset times are in UAE time (UTC+4); custom time supports natural language (e.g. `tomorrow 3pm`, `in 2 hours`, `next Monday 9am`)
 
 `reminders.json` is written to the project directory and acts as the full history log.
 
