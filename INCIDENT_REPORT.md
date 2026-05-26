@@ -148,6 +148,36 @@ dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
 
 ---
 
+## INC-013 — Bot Goes Offline During Multiple Rapid Deployments
+
+**Symptom:** Bot stops responding in Slack for several minutes. No error — it simply doesn't reply to anything (Q&A or reminders).
+**When it happens:** After multiple commits are pushed to GitHub in quick succession. Each push triggers a new Railway deployment. During every build (~30–60 sec), the bot has no active Slack Socket Mode connection.
+**Root cause:** Railway stops the running container before starting the new one. With 5+ commits pushed in a short session, the bot restarts repeatedly.
+**How to diagnose via terminal:**
+```bash
+# Check Slack token is valid
+curl -s -X POST "https://slack.com/api/auth.test" \
+  -H "Authorization: Bearer $SLACK_BOT_TOKEN" | python3 -m json.tool
+# Expected: "ok": true
+
+# Check Supabase is reachable
+curl -s -o /dev/null -w "%{http_code}" \
+  "https://ryqvaouqpufdacbhosyk.supabase.co/rest/v1/reminders?select=id&limit=1" \
+  -H "apikey: $SUPABASE_SERVICE_KEY"
+# Expected: 200
+```
+If both return OK, the issue is Railway — not the code or credentials.
+**Fix:** Force a fresh Railway deploy:
+```bash
+git commit --allow-empty -m "Force redeploy" && git push origin main
+```
+Then confirm in Railway dashboard → UAEOPS_Bot → Deployments → **ACTIVE / Deployment successful**.
+**Prevention:** Batch all changes into a single commit instead of pushing one at a time.
+**Commit:** `5ce6fbf` (force redeploy)
+**Status:** ✅ Resolved
+
+---
+
 ## How to Add a New Page to the Bot's Knowledge Base
 
 1. Open the Notion page
@@ -167,3 +197,4 @@ dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
 | Bot online, no replies | Event subs missing | Slack App → Event Subscriptions → add `app_mention` + `message.im` |
 | "Something went wrong" | Check Railway logs | Filter by service → look for ERROR lines |
 | Q&A finds nothing | Page not connected or image-heavy | Check Railway logs for `Notion search → 0 pages` |
+| Bot offline, no response | Deployment in progress or stuck | Check Slack + Supabase via terminal, then `git commit --allow-empty -m "Force redeploy" && git push` |
