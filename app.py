@@ -445,6 +445,10 @@ def handle_remind_custom_open(ack, body, client):
     count    = reminder_store.count_for_message(user_id, ctx["message_ts"])
     remaining = reminder_store.MAX_REMINDERS - count
 
+    # Store the time picker message ts so we can update it on submit
+    ctx["picker_ts"] = body.get("message", {}).get("ts", "")
+    ctx_str = json.dumps(ctx)
+
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
@@ -519,20 +523,40 @@ def handle_remind_custom_submit(ack, body, client):
         )
         _schedule(reminder)
 
-        num   = reminder["reminder_number"]
-        total = reminder_store.MAX_REMINDERS
-        client.chat_postMessage(
-            channel=user_id,
-            text=(
-                f"✅ Got it! I'll remind you on *{_format_dt(parsed)}*. "
-                f"_(Reminder {num}/{total})_"
-            ),
+        num      = reminder["reminder_number"]
+        total    = reminder_store.MAX_REMINDERS
+        conf_text = (
+            f"✅ Got it! I'll remind you on *{_format_dt(parsed)}*.\n"
+            f"_Reminder {num}/{total} for this message._"
         )
+        conf_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": conf_text}}]
+
+        picker_ts = ctx.get("picker_ts")
+        if picker_ts:
+            # Update the original time picker message in-place (same as preset buttons)
+            try:
+                client.chat_update(
+                    channel=ctx["channel_id"],
+                    ts=picker_ts,
+                    text=conf_text,
+                    blocks=conf_blocks,
+                )
+            except Exception as update_err:
+                logger.warning("Could not update picker message: %s", update_err)
+                client.chat_postMessage(channel=ctx["channel_id"], text=conf_text,
+                                        thread_ts=ctx.get("thread_ts"))
+        else:
+            client.chat_postMessage(channel=ctx["channel_id"], text=conf_text,
+                                    thread_ts=ctx.get("thread_ts"))
+
     except ValueError as e:
-        client.chat_postMessage(channel=user_id, text=str(e))
+        client.chat_postMessage(channel=ctx["channel_id"], text=str(e),
+                                thread_ts=ctx.get("thread_ts"))
     except Exception as e:
         logger.error("remind_custom_submit error: %s", e)
-        client.chat_postMessage(channel=user_id, text="Something went wrong setting your reminder.")
+        client.chat_postMessage(channel=ctx["channel_id"],
+                                text="Something went wrong setting your reminder.",
+                                thread_ts=ctx.get("thread_ts"))
 
 
 @slack_app.action("remind_done")
