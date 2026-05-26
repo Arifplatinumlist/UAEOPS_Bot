@@ -124,7 +124,7 @@ def _time_picker_blocks(ctx: dict, count: int) -> list[dict]:
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Custom time..."},
                     "action_id": "remind_custom_open",
-                    "value": ctx_str,
+                    "value": json.dumps({**ctx, "count": count}),
                 },
             ],
         },
@@ -464,8 +464,10 @@ def handle_remind_custom_open(ack, body, client):
     ack()
     ctx_str  = body["actions"][0]["value"]
     ctx      = json.loads(ctx_str)
-    user_id  = body["user"]["id"]
-    count    = reminder_store.count_for_message(user_id, ctx["message_ts"])
+
+    # count is stored in the button value — no Supabase call needed here,
+    # so views_open fires immediately within the 3-second trigger_id window.
+    count     = ctx.pop("count", 0)
     remaining = reminder_store.MAX_REMINDERS - count
 
     # Store the time picker message ts so we can update it on submit
