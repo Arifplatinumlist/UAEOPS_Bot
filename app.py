@@ -42,9 +42,8 @@ Guidelines:
 - Never invent facts or use knowledge outside what's in the excerpts"""
 
 NO_RESULTS_MSG = (
-    "I searched my knowledge base but couldn't find anything relevant to that question. "
-    "Try rephrasing, or let an admin know to add that topic with:\n"
-    "`python ingest.py --file yourfile.pdf`"
+    "I searched the Notion knowledge base but couldn't find anything relevant to that question. "
+    "Try rephrasing, or ask an admin to add a Notion page covering that topic and connect it to the bot integration."
 )
 
 histories: dict[str, list[dict]] = {}
@@ -229,8 +228,8 @@ def _qa_answer(channel_id: str, question: str) -> str:
     if not _KB_AVAILABLE:
         return (
             "The knowledge base isn't configured yet. "
-            "Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in `.env`, "
-            "run the migration, then restart the bot."
+            "Set `NOTION_TOKEN` in the Railway environment variables, "
+            "then redeploy the bot."
         )
 
     results = knowledge_base.search(question)
@@ -463,7 +462,7 @@ def handle_remind_custom_open(ack, body, client):
                             "text": "e.g. tomorrow 3pm, in 2 hours, next Monday 9am",
                         },
                     },
-                    "label": {"type": "plain_text", "text": "When should I remind you? (times are UTC)"},
+                    "label": {"type": "plain_text", "text": "When should I remind you? (UAE time, UTC+4)"},
                 },
             ],
         },
@@ -481,7 +480,8 @@ def handle_remind_custom_submit(ack, body, client):
         settings={
             "RETURN_AS_TIMEZONE_AWARE": True,
             "PREFER_DATES_FROM": "future",
-            "TO_TIMEZONE": "UTC",
+            "TIMEZONE": "Asia/Dubai",
+            "TO_TIMEZONE": "Asia/Dubai",
         },
     )
     if not parsed:

@@ -1,59 +1,131 @@
 """
-Vector search against Supabase pgvector.
-Uses sentence-transformers (all-MiniLM-L6-v2, 384 dims) for local embeddings.
-Model (~90 MB) is downloaded on first use and cached automatically.
+Knowledge base — searches Notion pages directly via the Notion REST API.
+
+Setup:
+1. Go to https://www.notion.so/my-integrations → New integration → copy the token
+2. Set NOTION_TOKEN in Railway environment variables (and local .env)
+3. For each Notion page you want the bot to search:
+   open the page → ··· menu → Add connections → pick your integration
 """
 import os
 import logging
-from functools import lru_cache
-from supabase import create_client, Client
+import requests
 
 logger = logging.getLogger(__name__)
 
-
-@lru_cache(maxsize=1)
-def _model():
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer("all-MiniLM-L6-v2")
+NOTION_API = "https://api.notion.com/v1"
+NOTION_VERSION = "2022-06-28"
+MAX_CONTENT_PER_PAGE = 3000  # chars — keeps prompts manageable
 
 
-@lru_cache(maxsize=1)
-def _client() -> Client:
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+def _headers() -> dict:
+    token = os.environ.get("NOTION_TOKEN", "")
+    if not token:
+        raise RuntimeError("NOTION_TOKEN is not set")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
 
 
-def embed(text: str) -> list[float]:
-    return _model().encode(text, normalize_embeddings=True).tolist()
+def _page_title(page: dict) -> str:
+    """Extract plain-text title from a Notion page object."""
+    for prop in page.get("properties", {}).values():
+        if prop.get("type") == "title":
+            return "".join(rt.get("plain_text", "") for rt in prop.get("title", []))
+    return "Untitled"
 
 
-def search(query: str, top_k: int = 5, threshold: float = 0.3) -> list[dict]:
-    """Return top_k document chunks most similar to query."""
+def _block_to_text(block: dict) -> str:
+    """Convert a single Notion block to a readable plain-text line."""
+    btype = block.get("type", "")
+    content = block.get(btype, {})
+    rich = content.get("rich_text", [])
+    text = "".join(rt.get("plain_text", "") for rt in rich)
+    if btype in ("heading_1", "heading_2", "heading_3"):
+        text = f"\n## {text}\n"
+    elif btype == "bulleted_list_item":
+        text = f"• {text}"
+    elif btype == "numbered_list_item":
+        text = f"- {text}"
+    elif btype == "to_do":
+        text = f"{'[x]' if content.get('checked') else '[ ]'} {text}"
+    elif btype == "code":
+        text = f"`{text}`"
+    return text
+
+
+def _fetch_page_text(page_id: str) -> str:
+    """Fetch all block text for a Notion page (handles pagination)."""
+    lines, cursor = [], None
+    while True:
+        params: dict = {"page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        resp = requests.get(
+            f"{NOTION_API}/blocks/{page_id}/children",
+            headers=_headers(),
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for block in data.get("results", []):
+            line = _block_to_text(block)
+            if line.strip():
+                lines.append(line)
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return "\n".join(lines)
+
+
+def search(query: str, top_k: int = 5, threshold: float = 0.0) -> list[dict]:
+    """
+    Search Notion for pages matching the query.
+    Returns a list of dicts with keys: title, source, content.
+    """
     try:
-        result = _client().rpc("search_documents", {
-            "query_embedding": embed(query),
-            "match_count": top_k,
-            "match_threshold": threshold,
-        }).execute()
-        return result.data or []
+        resp = requests.post(
+            f"{NOTION_API}/search",
+            headers=_headers(),
+            json={
+                "query": query,
+                "filter": {"value": "page", "property": "object"},
+                "sort": {"direction": "descending", "timestamp": "last_edited_time"},
+                "page_size": top_k,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        pages = resp.json().get("results", [])
+        if not pages:
+            return []
+
+        results = []
+        for page in pages:
+            page_id = page["id"]
+            title   = _page_title(page)
+            url     = page.get("url", f"https://notion.so/{page_id.replace('-', '')}")
+            try:
+                content = _fetch_page_text(page_id)
+                if content.strip():
+                    results.append({
+                        "title":   title,
+                        "source":  url,
+                        "content": content[:MAX_CONTENT_PER_PAGE],
+                    })
+            except Exception as e:
+                logger.warning("Could not fetch Notion page %s (%s): %s", page_id, title, e)
+        return results
+
     except Exception as e:
-        logger.error("KB search failed: %s", e)
+        logger.error("Notion search failed: %s", e)
         return []
 
 
 def add_chunks(source: str, chunks: list[str], title: str = "", metadata: dict = None) -> int:
-    """Embed and insert text chunks. Returns number of rows inserted."""
-    rows = [
-        {
-            "source": source,
-            "title": title or source,
-            "content": chunk,
-            "metadata": metadata or {},
-            "embedding": embed(chunk),
-        }
-        for chunk in chunks
-        if chunk.strip()
-    ]
-    if not rows:
-        return 0
-    _client().table("documents").insert(rows).execute()
-    return len(rows)
+    """No-op in Notion mode — content lives directly in Notion pages."""
+    logger.info("Notion mode: add_chunks is a no-op. Edit pages in Notion directly.")
+    return 0

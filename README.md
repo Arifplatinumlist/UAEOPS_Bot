@@ -1,10 +1,10 @@
 # UAEOPS Bot
 
-A Slack bot that answers questions from your own knowledge base using Claude (Anthropic).
+A Slack bot that answers questions from your own Notion knowledge base using Claude (Anthropic).
 
 **How it works:**
 1. Someone DMs the bot or @mentions it in a channel
-2. The bot searches your Supabase knowledge base for relevant content
+2. The bot searches your connected Notion pages for relevant content
 3. Claude reads the matching excerpts and replies in a warm, conversational tone
 4. If nothing is found in the knowledge base, it says so — it never makes things up
 
@@ -12,9 +12,14 @@ A Slack bot that answers questions from your own knowledge base using Claude (An
 
 ## Setup
 
-### 1. Supabase — create the vector table
+### 1. Notion — create an integration and connect your pages
 
-Run `migrations/001_create_knowledge_base.sql` in your Supabase SQL editor (one-time setup).
+1. Go to https://www.notion.so/my-integrations → **New integration**
+2. Give it a name (e.g. `UAEOPS Bot`) → Submit → copy the **Internal Integration Token**
+3. Set it as `NOTION_TOKEN` in your `.env` and Railway environment variables
+4. For **each Notion page** you want the bot to search: open the page → `···` menu → **Add connections** → pick your integration
+
+> The bot can only see pages explicitly connected to the integration — it won't read your entire workspace.
 
 ### 2. Create a Slack App
 
@@ -67,22 +72,9 @@ When the time comes, the bot sends you a DM with a link back to the original mes
 
 ## Adding content to the knowledge base
 
-```bash
-# PDF, Word, Markdown, or plain text file
-python ingest.py --file docs/runbook.pdf
-python ingest.py --file notes.md
+All content lives in Notion — just write or paste into a Notion page and connect it to the bot integration (see Setup step 1). The bot will find it on the next question.
 
-# Any web page
-python ingest.py --url https://your-internal-wiki.com/page
-
-# Notion page (needs NOTION_TOKEN in .env)
-python ingest.py --notion abc123def456...
-
-# Canva / any reference link
-python ingest.py --link "https://www.canva.com/design/..." \
-                 --title "Q2 Review Slides" \
-                 --description "Quarterly operations review presented in April 2025"
-```
+No ingestion script needed. 🎉
 
 ---
 
@@ -93,7 +85,5 @@ python ingest.py --link "https://www.canva.com/design/..." \
 | `SLACK_BOT_TOKEN` | Yes | Bot OAuth token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Yes | App-level token for Socket Mode (`xapp-...`) |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
-| `SUPABASE_URL` | Yes | Your Supabase project URL |
-| `SUPABASE_SERVICE_KEY` | Yes | Service role key (Settings > API) |
-| `NOTION_TOKEN` | No | Only needed for Notion ingestion |
+| `NOTION_TOKEN` | Yes | Internal integration token from https://notion.so/my-integrations |
 | `CLAUDE_MODEL` | No | Defaults to `claude-sonnet-4-6` |
