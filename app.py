@@ -335,8 +335,9 @@ def _handle_remind_request(event, say, client):
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
 def _process_mention(event, say, client):
+    channel         = event["channel"]
+    placeholder_ts  = None
     try:
-        channel  = event["channel"]
         bot_uid  = _get_bot_uid(client)
         raw_text = event.get("text", "")
         clean    = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
@@ -351,22 +352,32 @@ def _process_mention(event, say, client):
             say("Hi! Ask me anything.", thread_ts=event["ts"], reply_broadcast=True)
             return
 
+        # Post a placeholder immediately so the user sees a response right away
         try:
-            client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+            resp = say(text="⏳ Searching the knowledge base...",
+                       thread_ts=event["ts"], reply_broadcast=True)
+            placeholder_ts = resp.get("ts")
         except Exception:
             pass
-        try:
-            say(text=_qa_answer(channel, clean), thread_ts=event["ts"], reply_broadcast=True)
-        finally:
+
+        answer = _qa_answer(channel, clean)
+
+        if placeholder_ts:
             try:
-                client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                return
             except Exception:
                 pass
+        say(text=answer, thread_ts=event["ts"], reply_broadcast=True)
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
+        error_text = "Something went wrong — please try again."
         try:
-            say(text="Something went wrong — please try again.", thread_ts=event.get("ts"), reply_broadcast=True)
+            if placeholder_ts:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
+            else:
+                say(text=error_text, thread_ts=event.get("ts"), reply_broadcast=True)
         except Exception:
             pass
 
@@ -377,28 +388,38 @@ def handle_mention(event, say, client):
 
 
 def _process_dm(event, say, client):
+    channel        = event["channel"]
+    placeholder_ts = None
     try:
         question = event.get("text", "").strip()
         if not question:
             return
 
-        channel = event["channel"]
+        # Immediate feedback — user sees this within ~1 second while Notion+Claude run
         try:
-            client.reactions_add(channel=channel, name="thinking_face", timestamp=event["ts"])
+            resp = say(text="⏳ Searching the knowledge base...")
+            placeholder_ts = resp.get("ts")
         except Exception:
             pass
-        try:
-            say(text=_qa_answer(channel, question))
-        finally:
+
+        answer = _qa_answer(channel, question)
+
+        if placeholder_ts:
             try:
-                client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                return
             except Exception:
                 pass
+        say(text=answer)
 
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
+        error_text = "Something went wrong — please try again."
         try:
-            say(text="Something went wrong — please try again.")
+            if placeholder_ts:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=error_text)
+            else:
+                say(text=error_text)
         except Exception:
             pass
 

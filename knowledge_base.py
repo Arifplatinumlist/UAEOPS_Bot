@@ -10,6 +10,7 @@ Setup:
 import os
 import logging
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -110,23 +111,22 @@ def search(query: str, top_k: int = 5, threshold: float = 0.0) -> list[dict]:
         if not pages:
             return []
 
-        results = []
-        for page in pages:
+        def _fetch_one(page: dict):
             page_id = page["id"]
             title   = _page_title(page)
             url     = page.get("url", f"https://notion.so/{page_id.replace('-', '')}")
             try:
                 content = _fetch_page_text(page_id)
-                # Include the page even if content is sparse (e.g. image-heavy pages)
                 if not content.strip():
                     content = f"(This page — '{title}' — appears to contain images or non-text content. Direct the user to view it at {url})"
-                results.append({
-                    "title":   title,
-                    "source":  url,
-                    "content": content[:MAX_CONTENT_PER_PAGE],
-                })
+                return {"title": title, "source": url, "content": content[:MAX_CONTENT_PER_PAGE]}
             except Exception as e:
                 logger.warning("Could not fetch Notion page %s (%s): %s", page_id, title, e)
+                return None
+
+        # Fetch all pages in parallel — cuts sequential wait from O(n×t) to O(t)
+        with ThreadPoolExecutor(max_workers=min(len(pages), 5)) as ex:
+            results = [r for r in ex.map(_fetch_one, pages) if r is not None]
         return results
 
     except Exception as e:
