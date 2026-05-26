@@ -333,7 +333,7 @@ def handle_mention(event, say, client):
             return
 
         if not clean:
-            say("Hi! Ask me anything.", thread_ts=event["ts"])
+            say("Hi! Ask me anything.", thread_ts=event["ts"], reply_broadcast=True)
             return
 
         try:
@@ -341,7 +341,9 @@ def handle_mention(event, say, client):
         except Exception:
             pass
         try:
-            say(text=_qa_answer(channel, clean), thread_ts=event["ts"])
+            # reply_broadcast=True makes the answer visible in the channel feed on mobile
+            # (not just buried in the thread)
+            say(text=_qa_answer(channel, clean), thread_ts=event["ts"], reply_broadcast=True)
         finally:
             try:
                 client.reactions_remove(channel=channel, name="thinking_face", timestamp=event["ts"])
@@ -351,7 +353,7 @@ def handle_mention(event, say, client):
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
         try:
-            say(text="Something went wrong — please try again.", thread_ts=event.get("ts"))
+            say(text="Something went wrong — please try again.", thread_ts=event.get("ts"), reply_broadcast=True)
         except Exception:
             pass
 
