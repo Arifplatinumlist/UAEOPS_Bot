@@ -162,7 +162,7 @@ Required settings in https://api.slack.com/apps:
 |---------|---------------|
 | Socket Mode | **Enabled** |
 | App-Level Token scope | `connections:write` |
-| Bot Token scopes | `app_mentions:read`, `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read` |
+| Bot Token scopes | `app_mentions:read`, `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read` — ⚠️ all required; missing `im:read` silently kills all DM events (INC-015) |
 | Event Subscriptions | `app_mention`, `message.im` |
 | Interactivity & Shortcuts | **Enabled** — required for button clicks and modals |
 
@@ -272,6 +272,11 @@ After regenerating: update all Railway environment variables (Variables tab → 
 ## 13. Outstanding Tasks
 
 1. **🔴 Rotate all credentials** (Section 12) — highest priority
+2. **🟡 Install Claude skills on new machine** — after cloning repo, run:
+   ```bash
+   cp -r .claude/skills/uaeops-debug ~/.claude/skills/
+   cp -r .claude/skills/uaeops-deploy ~/.claude/skills/
+   ```
 2. **🟡 Add `reactions:write` scope to Slack app** — bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add `reactions:write` → Reinstall App → update `SLACK_BOT_TOKEN` in Railway
 3. **🟡 Verify Q&A quality** — pages connected, search working. Test with real questions and keep adding Notion pages as content grows
 4. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
@@ -286,6 +291,11 @@ After regenerating: update all Railway environment variables (Variables tab → 
 - ✅ INCIDENT_REPORT.md created — full history of all bugs, root causes, and fixes (`7e45465`)
 - ✅ Incident report added to Notion Document Hub — bot can now troubleshoot using its own history
 - ✅ INC-013 added — bot offline during rapid deployments (force-redeploy fix documented) (`5bf8209`)
+- ✅ INC-014 fixed — custom time modal "We had some trouble connecting" — two root causes:
+  - `ack()` called after slow `dateparser` → moved ack to top (`2773c34`)
+  - Supabase call before `views_open` → count now cached in button value (`f5905fa`)
+- ✅ INC-015 fixed — bot completely silent, no events received — `im:read` scope was missing from bot token. Added scope, reinstalled Slack app (`6645563`)
+- ✅ Two Claude skills created: `uaeops-debug` and `uaeops-deploy` — auto-trigger for debugging and deployment workflows (`533b740`)
 
 ---
 
@@ -304,14 +314,16 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | Q&A says "knowledge base not configured" | `NOTION_TOKEN` not set in Railway | Add `NOTION_TOKEN` to Railway env vars + Deploy |
 | Q&A finds nothing | No Notion pages connected to integration | Connect the **database** in Notion (e.g. Document Hub) → bot auto-gets all child pages |
 | Q&A crashes with "Something went wrong" | `reactions:write` scope missing on Slack app | Fixed in `a492764` — reactions fail silently now |
+| "We had some trouble connecting" on custom time | trigger_id expired — Supabase call before `views_open` | Fixed in `f5905fa` — count cached in button value |
+| Bot completely silent — no DMs, no mentions | `im:read` scope missing from bot token | Slack App → OAuth & Permissions → add `im:read` → Reinstall → update SLACK_BOT_TOKEN in Railway (INC-015) |
 | No 🤔 emoji while bot is thinking | `reactions:write` scope not granted | Add scope in Slack App → OAuth & Permissions → Reinstall App |
 | Build takes 5+ minutes | Legacy — only if sentence-transformers snuck back in | Check requirements.txt — it should NOT be there |
 
 ---
 
-## 15. Live Status (May 26, 2026)
+## 15. Live Status (May 27, 2026)
 
-- **Latest commit:** `5bf8209` — Add INC-013: bot offline during rapid deployments
+- **Latest commit:** `6645563` — Force redeploy after im:read scope fix
 - **Railway:** Online ✅ — auto-deploys on every push to main
 - **Supabase:** `SUPABASE_SERVICE_KEY` set to correct service_role JWT ✅
 - **NOTION_TOKEN:** ✅ Set in Railway
@@ -336,6 +348,11 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | `7e45465` | Add INCIDENT_REPORT.md + update HANDOVER.md |
 | `5ce6fbf` | Force redeploy (bot was offline after rapid commits) |
 | `5bf8209` | Add INC-013: bot offline during rapid deployments |
+| `8485d9a` | Update HANDOVER.md: sync commits |
+| `2773c34` | Fix custom time modal: ack before dateparser (INC-014 part 1) |
+| `f5905fa` | Fix custom time modal: cache count in button value (INC-014 part 2) |
+| `533b740` | Add Claude skills: uaeops-debug and uaeops-deploy |
+| `6645563` | Force redeploy after im:read scope added (INC-015 fix) |
 
 **To test reminders:**
 1. In any Slack channel: `@UAEOPS_Bot remind me`

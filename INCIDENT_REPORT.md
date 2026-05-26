@@ -178,6 +178,42 @@ Then confirm in Railway dashboard → UAEOPS_Bot → Deployments → **ACTIVE / 
 
 ---
 
+## INC-014 — Custom Time Modal: "We Had Some Trouble Connecting"
+
+**Symptom:** Clicking "Custom time..." in the time picker opened the modal fine, but after typing a time and clicking "Set reminder", Slack showed "We had some trouble connecting. Try again?" and the reminder was never saved.  
+**Root cause (1):** `handle_remind_custom_submit` called `dateparser.parse()` BEFORE calling `ack()`. Slack requires `ack()` within 3 seconds of a view submission. `dateparser` is slow on first call, pushing past the limit.  
+**Root cause (2):** `handle_remind_custom_open` called `reminder_store.count_for_message()` (a Supabase API roundtrip) BEFORE calling `client.views_open()`. The `trigger_id` Slack issues for button clicks also expires after 3 seconds. The Supabase call consumed the window, so `views_open` arrived too late.  
+**Fix:**
+1. Move `ack()` to the very top of `handle_remind_custom_submit`, before `dateparser.parse()`. If parsing fails, report the error via `chat_postMessage` to the thread instead of inline form validation.
+2. Store `count` inside the "Custom time..." button value at build time (in `_time_picker_blocks`). In `handle_remind_custom_open`, read count from `ctx.pop("count", 0)` — no Supabase call needed. `views_open` fires immediately after `ack()`.
+**Files:** `app.py` → `handle_remind_custom_submit`, `handle_remind_custom_open`, `_time_picker_blocks`  
+**Commits:** `2773c34`, `f5905fa`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-015 — Bot Running but Receives No Slack Events (DMs and Mentions Silent)
+
+**Symptom:** Bot is online (Railway green, Socket Mode session established in logs), all tokens valid, event subscriptions listed in Slack dashboard — but absolutely no log lines appear when sending DMs or @mentions. Bot is completely silent.  
+**Root cause:** `im:read` OAuth scope was missing from the bot token. Without this scope, Slack silently discards all `message.im` events even though they appear subscribed. The bot can connect and establish a Socket Mode session, but Slack never sends it any DM payloads.  
+**How to confirm:** Run this — if it returns `missing_scope: im:read`, that's the issue:
+```bash
+BOT_TOKEN=$(grep SLACK_BOT_TOKEN .env | cut -d= -f2-)
+curl -s "https://slack.com/api/conversations.list?types=im&limit=1" \
+  -H "Authorization: Bearer $BOT_TOKEN" | python3 -m json.tool
+```
+**Fix:**
+1. Slack App → **OAuth & Permissions** → **Bot Token Scopes** → **Add an OAuth Scope** → add `im:read`
+2. Click **Reinstall to workspace** (yellow banner at top) → Allow
+3. Copy the bot token (may stay the same) → update `SLACK_BOT_TOKEN` in Railway Variables → Deploy
+4. Force redeploy: `git commit --allow-empty -m "Force redeploy — im:read scope added" && git push origin main`
+**Verification:** After fix, `conversations.list?types=im` returns `"ok": true` with channel data.  
+**Commit:** `6645563` (force redeploy after scope fix)  
+**Status:** ✅ Resolved  
+**Note:** This scope is required even if `im:history` and `im:write` are both present. All three are needed for full DM functionality.
+
+---
+
 ## How to Add a New Page to the Bot's Knowledge Base
 
 1. Open the Notion page
@@ -198,3 +234,5 @@ Then confirm in Railway dashboard → UAEOPS_Bot → Deployments → **ACTIVE / 
 | "Something went wrong" | Check Railway logs | Filter by service → look for ERROR lines |
 | Q&A finds nothing | Page not connected or image-heavy | Check Railway logs for `Notion search → 0 pages` |
 | Bot offline, no response | Deployment in progress or stuck | Check Slack + Supabase via terminal, then `git commit --allow-empty -m "Force redeploy" && git push` |
+| "We had some trouble connecting" on modal | trigger_id expired (Supabase call too slow) | Fixed in `f5905fa` — count cached in button value |
+| No events at all, bot completely silent | `im:read` scope missing | Slack App → OAuth & Permissions → add `im:read` → Reinstall → update SLACK_BOT_TOKEN in Railway |
