@@ -4,46 +4,65 @@ Your UAE operations team assistant, living inside Slack.
 
 ---
 
-## What it does
+## Skills overview
 
-### 1 — Reminders
-Never lose track of a message again. Right-click any Slack message, set a reminder, and the bot will DM you at the right time with a link back to the original.
+| # | Skill | How to trigger |
+|---|-------|---------------|
+| 1 | **Reminders** | `@UAEOPS_Bot remind me` in any channel |
+| 2 | **Chat & Q&A** | `@UAEOPS_Bot <your question>` or DM the bot |
+
+More skills are being added over time.
+
+---
+
+## Skill 1 — Reminders
+
+Never lose track of a message again. Mention the bot in any thread or channel, set a reminder, and it will DM you at the right time with a link back to the original message.
 
 **How to use:**
-1. Right-click any message in Slack
-2. Hover over **More message shortcuts**
-3. Click **Add Reminder**
-4. Pick a time: **30 min / 1 hour / 4 hours / Tomorrow 9am** or type a custom time
+1. In any channel or thread, type: `@UAEOPS_Bot remind me`
+2. Pick a time: **30 min / 1 hour / 4 hours / Tomorrow 9am** or type a custom time
+3. The bot confirms in the thread — click **✕ Dismiss** to clean it up
 
-The bot will DM you when the time comes. You can mark it done or ask to be reminded again.
+When the time comes, the bot sends you a DM with the original message and a link back to it. You can mark it done or ask to be reminded again.
+
+**Custom time examples:**
+- *"tomorrow 3pm"*
+- *"in 2 hours"*
+- *"next Monday 9am"*
 
 **Rules:**
 - Max 3 reminders per message
 - All times are UAE time (UTC+4)
-- Custom time accepts natural language — *"tomorrow 3pm"*, *"in 2 hours"*, *"next Monday 9am"*
 
 ---
 
-### 2 — Knowledge Base Q&A
-Ask the bot anything covered in your Notion knowledge base and get an instant, sourced answer.
+## Skill 2 — Chat & Q&A
+
+Ask the bot anything covered in your Notion knowledge base and get an instant answer. The bot tells you which page it pulled from so you can always verify.
 
 **How to use:**
-- Mention `@UAEOPS_Bot` in any channel with your question
-- Or DM the bot directly
+- Mention `@UAEOPS_Bot` in any channel followed by your question
+- Or DM the bot directly — no @mention needed in a DM
 
-**Example:**
-> `@UAEOPS_Bot what is the process for onboarding a new event manager?`
+**Examples:**
+> `@UAEOPS_Bot what is the process for reporting a permit issue?`
+> `@UAEOPS_Bot how do I escalate a P1 alert?`
+> `@UAEOPS_Bot where do I find the onboarding guide for the task channel?`
 
-The bot searches your connected Notion pages and replies in the thread with an answer and the source page it pulled from. If it can't find anything, it says so — it never makes things up.
+The bot searches your connected Notion pages and replies in the thread. If it can't find anything it says so — it never makes things up.
+
+**Tips for good answers:**
+- Be specific — *"what is the escalation process for a P1 alert?"* works better than *"how do alerts work?"*
+- Use keywords from the doc — if a page is called "Permit guidelines", mention "permit" in your question
+- If it returns nothing, try rephrasing or check that the page is connected to the bot in Notion
 
 **Adding content to the knowledge base:**
-Write or update a Notion page → make sure the page is connected to the bot integration → the bot will find it immediately on the next question. No syncing needed.
+1. Open any Notion page
+2. Click `···` menu → **Connections** → **Add connection** → **UAEOPS_bot**
+3. Done — the bot finds it immediately. No syncing needed.
 
----
-
-## More skills coming
-
-This bot is being actively developed. New skills will be added over time.
+> Connecting a database (e.g. Document Hub) automatically gives the bot access to all pages inside it.
 
 ---
 
@@ -52,18 +71,17 @@ This bot is being actively developed. New skills will be added over time.
 ### Notion integration
 1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) → **New integration** → copy the token
 2. Add `NOTION_TOKEN` to Railway environment variables
-3. For each Notion page you want the bot to search: open the page → `···` menu → **Add connections** → pick the UAEOPS Bot integration
-
-> The bot only sees pages explicitly connected to it — it cannot read your entire Notion workspace.
+3. Connect Notion pages or databases to the bot: open page → `···` → **Connections** → **UAEOPS_bot**
 
 ### Slack App requirements
 | Setting | Value |
 |---------|-------|
 | Socket Mode | Enabled |
-| Bot token scopes | `chat:write`, `channels:history`, `im:history`, `users:read` |
+| Bot token scopes | `app_mentions:read`, `chat:write`, `channels:history`, `groups:history`, `im:history`, `im:read`, `im:write`, `users:read` |
 | Event subscriptions | `app_mention`, `message.im` |
-| Interactivity & Shortcuts | Enabled |
-| Message Shortcut name | Add Reminder (callback: `add_reminder`) |
+| Interactivity | Enabled (required for buttons and modals) |
+
+> Optional: add `reactions:write` scope to show a 🤔 emoji while the bot is thinking. Requires reinstalling the app.
 
 ### Environment variables
 | Variable | Description |
@@ -72,6 +90,8 @@ This bot is being actively developed. New skills will be added over time.
 | `SLACK_APP_TOKEN` | App-level Socket Mode token (`xapp-...`) |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `NOTION_TOKEN` | Notion internal integration token |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Supabase service_role JWT (`eyJ...`) |
 
 ---
 
