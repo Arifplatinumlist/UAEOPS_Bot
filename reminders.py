@@ -5,12 +5,14 @@ Thread-safe via a single module-level lock.
 import json
 import uuid
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
 REMINDERS_FILE = Path("reminders.json")
 MAX_REMINDERS = 3
+
+UAE_TZ = timezone(timedelta(hours=4))  # UTC+4, no DST
 
 _lock = threading.Lock()
 
@@ -64,8 +66,8 @@ def create(
             "thread_ts": thread_ts,
             "permalink": permalink,
             "message_text": message_text[:200],
-            "remind_at": remind_at.isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "remind_at": remind_at.astimezone(UAE_TZ).isoformat(),
+            "created_at": datetime.now(UAE_TZ).isoformat(),
             "status": "pending",
             "reminder_number": existing + 1,
         }
