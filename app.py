@@ -340,7 +340,7 @@ def _handle_remind_request(event, say, client):
 
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
-def _process_mention(event, say, client, placeholder_ts):
+def _process_mention(event, say, client):
     channel = event["channel"]
     try:
         bot_uid  = _get_bot_uid(client)
@@ -350,87 +350,39 @@ def _process_mention(event, say, client, placeholder_ts):
         logger.info("app_mention: channel=%s clean=%r", channel, clean[:80])
 
         if _is_remind_request(clean):
-            # Delete the channel placeholder before posting the thread time picker
-            if placeholder_ts:
-                try:
-                    client.chat_delete(channel=channel, ts=placeholder_ts)
-                except Exception:
-                    pass
             _handle_remind_request(event, say, client)
             return
 
         if not clean:
-            if placeholder_ts:
-                try:
-                    client.chat_update(channel=channel, ts=placeholder_ts,
-                                       text="Hi! Ask me anything.")
-                except Exception:
-                    pass
-            else:
-                client.chat_postMessage(channel=channel, text="Hi! Ask me anything.")
+            say("Hi! Ask me anything.")
             return
 
-        answer = _qa_answer(channel, clean)
-
-        # Update the placeholder in-place — no thread_ts, so the answer appears
-        # as a regular channel message, not buried in a thread.
-        if placeholder_ts:
-            try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
-                return
-            except Exception:
-                pass
-        client.chat_postMessage(channel=channel, text=answer)
+        say(text=_qa_answer(channel, clean))
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
-        error_msg = "Something went wrong — please try again."
         try:
-            if placeholder_ts:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=error_msg)
-            else:
-                client.chat_postMessage(channel=channel, text=error_msg)
+            say("Something went wrong — please try again.")
         except Exception:
             pass
 
 
 @slack_app.event("app_mention")
 def handle_mention(event, say, client):
-    channel        = event["channel"]
-    placeholder_ts = None
-    try:
-        # Post placeholder directly in the channel (no thread_ts) — will be
-        # updated in-place with the answer so it appears as a normal chat message.
-        resp = client.chat_postMessage(channel=channel,
-                                       text="⏳ Searching the knowledge base...")
-        placeholder_ts = resp.get("ts")
-    except Exception:
-        pass
-    _pool.submit(_process_mention, event, say, client, placeholder_ts)
+    _pool.submit(_process_mention, event, say, client)
 
 
-def _process_dm(event, client, placeholder_ts):
+def _process_dm(event, say, client):
     channel = event["channel"]
     try:
         question = event.get("text", "").strip()
         if not question:
             return
-        answer = _qa_answer(channel, question)
-        if placeholder_ts:
-            try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
-                return
-            except Exception:
-                pass
-        client.chat_postMessage(channel=channel, text=answer)
+        say(text=_qa_answer(channel, question))
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
-        error_msg = "Something went wrong — please try again."
         try:
-            if placeholder_ts:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=error_msg)
-            else:
-                client.chat_postMessage(channel=channel, text=error_msg)
+            say("Something went wrong — please try again.")
         except Exception:
             pass
 
@@ -439,15 +391,7 @@ def _process_dm(event, client, placeholder_ts):
 def handle_dm(event, say, client):
     if event.get("bot_id") or event.get("subtype") or event.get("channel_type") not in ("im", "mpim"):
         return
-    channel        = event["channel"]
-    placeholder_ts = None
-    try:
-        resp = client.chat_postMessage(channel=channel,
-                                       text="⏳ Searching the knowledge base...")
-        placeholder_ts = resp.get("ts")
-    except Exception:
-        pass
-    _pool.submit(_process_dm, event, client, placeholder_ts)
+    _pool.submit(_process_dm, event, say, client)
 
 
 def _confirmation_blocks(text: str) -> list[dict]:
