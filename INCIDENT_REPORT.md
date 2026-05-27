@@ -1,7 +1,7 @@
 # UAEOPS Bot — Incident Report & Fix Log
 
 > All known bugs, root causes, and fixes. Used by the bot as a troubleshooting knowledge base.
-> Last updated: May 27, 2026 (INC-022)
+> Last updated: May 27, 2026 (INC-023)
 
 ---
 
@@ -351,6 +351,21 @@ except Exception:
 
 ---
 
+## INC-023 — Feedback Learning System Integration
+
+**Symptom:** No 👍/👎 buttons on answers; bot could not learn from user ratings.  
+**Root cause:** `feedback_store.py` was rolled back during INC-022 debugging. Supabase `feedback` table existed but was not integrated into `app.py`.  
+**Fix:** Re-integrated `feedback_store` into `app.py`:
+- Added `_FEEDBACK_AVAILABLE` flag (graceful fallback if Supabase vars missing)
+- `_qa_answer` now calls `feedback_store.get_relevant(question)` to prepend past positively-rated answers as extra Claude context
+- Added `_answer_blocks(answer, feedback_id)` — wraps answer in a section block with 👍/👎 action buttons
+- `_process_mention` and `_process_dm` call `feedback_store.create()` after each answer, pass `feedback_id` to `_answer_blocks`
+- Added `handle_feedback_positive` / `handle_feedback_negative` action handlers — call `feedback_store.rate()`, update message to show thank-you note and remove buttons  
+**Files:** `app.py`  
+**Status:** ✅ Resolved — deployed May 27, 2026
+
+---
+
 ## How to Add a New Page to the Bot's Knowledge Base
 
 1. Open the Notion page
@@ -377,3 +392,4 @@ except Exception:
 | Bot doesn't respond from mobile @mention | Mobile mention format `<@UID\|name>` not matched | Fixed in INC-016 — regex handles both desktop and mobile formats |
 | No ⏳ feedback when sending messages quickly | Placeholder posted in pool worker, not event handler | Fixed in INC-021 — placeholder now posted before `_pool.submit()` |
 | Replies go to thread, not main chat | `thread_ts` set on `say()` / `client.chat_postMessage()` used instead of `say()` | Fixed in INC-022 — use `say()` with no `thread_ts`; update placeholder with `chat_update` |
+| No 👍/👎 buttons on answers | `feedback_store` not imported, rolled back | Fixed in INC-023 — re-integrated feedback_store, `_FEEDBACK_AVAILABLE` guards it |

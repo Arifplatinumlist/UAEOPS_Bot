@@ -1,6 +1,6 @@
 # UAEOPS_Bot — Full Session Handover
 
-> Last updated: May 26, 2026 (session 3 — INC-016 through INC-021)
+> Last updated: May 27, 2026 (session 4 — INC-022, INC-023, feedback learning integration)
 > Status: **✅ LIVE on Railway** — bot is running 24/7, no local terminal needed
 > Written for: any new Claude session, any computer, fresh start
 
@@ -199,11 +199,12 @@ except Exception:
 **Rule for future sessions:** Always use `say()` for first contact in event handlers. Only use `client.chat_postMessage()` to post to a *different* channel (e.g. reminder DMs sent from the scheduler).  
 **Commits:** `f51bee1`, `d0349ea`
 
-### New feature — Feedback learning system
-Every Q&A answer now shows 👍/👎 buttons. Ratings are stored in the Supabase `feedback` table. Future Q&A calls retrieve the top 3 positively-rated answers for similar questions and include them as extra Claude context — the bot improves with use.
-
-**Key files:** `feedback_store.py` (new), `app.py` → `_answer_blocks()`, `_qa_answer()`, `handle_feedback()`
-**Supabase table:** `feedback` — see Section 8 for schema.
+### Bug 18 — Feedback learning system rolled back; 👍/👎 buttons missing (INC-023)
+**Cause:** `feedback_store` import removed during INC-022 debugging; Supabase `feedback` table existed but not connected.  
+**Fix:** Re-integrated in session 4. Every Q&A answer now shows 👍/👎 buttons. `_FEEDBACK_AVAILABLE` flag guards it gracefully if Supabase vars are missing. See INC-023 for full details.  
+**Key files:** `feedback_store.py`, `app.py` → `_answer_blocks()`, `_qa_answer()`, `_handle_feedback()`, `handle_feedback_positive()`, `handle_feedback_negative()`  
+**Supabase table:** `feedback` — see Section 8 for schema.  
+**Status:** ✅ Deployed May 27, 2026
 
 ---
 

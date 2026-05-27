@@ -30,6 +30,16 @@ except Exception as _kb_err:
     logger.warning("Knowledge base unavailable (%s). Q&A disabled, reminders still work.", _kb_err)
     _KB_AVAILABLE = False
 
+# Feedback store is optional — bot works fine without it
+try:
+    import feedback_store
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_KEY"):
+        raise RuntimeError("SUPABASE_URL or SUPABASE_SERVICE_KEY not set")
+    _FEEDBACK_AVAILABLE = True
+except Exception as _fb_err:
+    logger.warning("Feedback store unavailable (%s). Ratings disabled.", _fb_err)
+    _FEEDBACK_AVAILABLE = False
+
 slack_app = App(token=os.environ["SLACK_BOT_TOKEN"])
 claude    = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -92,6 +102,19 @@ def _format_dt(dt: datetime) -> str:
 
 
 # ── Block Kit builders ────────────────────────────────────────────────────────
+
+def _answer_blocks(answer: str, feedback_id: Optional[str]) -> list[dict]:
+    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": answer}}]
+    if feedback_id:
+        blocks.append({
+            "type": "actions",
+            "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "👍"}, "action_id": "feedback_positive", "value": feedback_id},
+                {"type": "button", "text": {"type": "plain_text", "text": "👎"}, "action_id": "feedback_negative", "value": feedback_id},
+            ],
+        })
+    return blocks
+
 
 def _time_picker_blocks(ctx: dict, count: int) -> list[dict]:
     """Blocks for choosing a reminder time. ctx carries message context."""
@@ -246,11 +269,25 @@ def _qa_answer(channel_id: str, question: str) -> str:
     if not results:
         return NO_RESULTS_MSG
 
-    context = "\n\n---\n\n".join(
+    kb_context = "\n\n---\n\n".join(
         f"[Source: {r.get('title') or r.get('source', 'unknown')}]\n{r['content']}"
         for r in results
     )
-    augmented = f"Knowledge base excerpts:\n\n{context}\n\n---\n\nQuestion: {question}"
+    context_parts = [f"Knowledge base excerpts:\n\n{kb_context}"]
+
+    if _FEEDBACK_AVAILABLE:
+        try:
+            past = feedback_store.get_relevant(question)
+            if past:
+                past_context = "\n\n---\n\n".join(
+                    f"[Past helpful answer for: {p['question'][:60]}]\n{p['answer']}"
+                    for p in past
+                )
+                context_parts.insert(0, f"Past positively-rated answers:\n\n{past_context}")
+        except Exception:
+            pass
+
+    augmented = "\n\n===\n\n".join(context_parts) + f"\n\n---\n\nQuestion: {question}"
 
     history = histories.setdefault(channel_id, [])
     history.append({"role": "user", "content": augmented})
@@ -370,13 +407,18 @@ def _process_mention(event, say, client, placeholder_ts):
 
         answer = _qa_answer(channel, clean)
 
+        feedback_id = None
+        if _FEEDBACK_AVAILABLE:
+            feedback_id = feedback_store.create(clean, answer, channel, event.get("user", ""))
+        blocks = _answer_blocks(answer, feedback_id)
+
         if placeholder_ts:
             try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer, blocks=blocks)
                 return
             except Exception:
                 pass
-        say(text=answer)
+        say(text=answer, blocks=blocks)
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
@@ -409,13 +451,19 @@ def _process_dm(event, say, client, placeholder_ts):
         if not question:
             return
         answer = _qa_answer(channel, question)
+
+        feedback_id = None
+        if _FEEDBACK_AVAILABLE:
+            feedback_id = feedback_store.create(question, answer, channel, event.get("user", ""))
+        blocks = _answer_blocks(answer, feedback_id)
+
         if placeholder_ts:
             try:
-                client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+                client.chat_update(channel=channel, ts=placeholder_ts, text=answer, blocks=blocks)
                 return
             except Exception:
                 pass
-        say(text=answer)
+        say(text=answer, blocks=blocks)
     except Exception as e:
         logger.error("handle_dm error: %s", e, exc_info=True)
         try:
@@ -696,6 +744,42 @@ def handle_remind_dismiss(ack, body, client):
         client.chat_delete(channel=channel, ts=ts)
     except Exception as e:
         logger.warning("Could not dismiss message: %s", e)
+
+
+# ── Feedback action handlers ───────────────────────────────────────────────────
+
+def _handle_feedback(ack, body, respond, rating: str):
+    ack()
+    feedback_id = body["actions"][0]["value"]
+    user_id     = body["user"]["id"]
+
+    if _FEEDBACK_AVAILABLE:
+        feedback_store.rate(feedback_id, user_id, rating)
+
+    emoji = "👍" if rating == "positive" else "👎"
+    try:
+        original_text = body["message"]["blocks"][0]["text"]["text"]
+    except Exception:
+        original_text = body["message"].get("text", "")
+
+    respond(
+        replace_original=True,
+        text=original_text,
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": original_text}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": f"_{emoji} Thanks for the feedback!_"}]},
+        ],
+    )
+
+
+@slack_app.action("feedback_positive")
+def handle_feedback_positive(ack, body, respond):
+    _handle_feedback(ack, body, respond, "positive")
+
+
+@slack_app.action("feedback_negative")
+def handle_feedback_negative(ack, body, respond):
+    _handle_feedback(ack, body, respond, "negative")
 
 
 # ── startup ───────────────────────────────────────────────────────────────────
