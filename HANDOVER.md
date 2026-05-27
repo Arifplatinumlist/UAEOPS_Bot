@@ -191,6 +191,14 @@ except Exception:
 **Cause:** The ⏳ placeholder was posted *inside* the pool worker. If all 8 workers were busy processing earlier questions, new messages queued silently for 15–20 s with nothing shown.
 **Fix:** Post the placeholder in `handle_dm` / `handle_mention` (the event handler, ~200 ms) *before* `_pool.submit()`. Workers receive `placeholder_ts` and only do the slow work.
 
+### Bug 17 — Replies going to thread, not main channel chat (INC-022)
+**Cause (1):** `say(thread_ts=event["ts"])` posts to the thread, not the channel.  
+**Cause (2):** `reply_broadcast=True` creates a Slack "thread broadcast" that renders differently from normal messages — users don't recognise it as a reply. `chat_update` also only touches the thread copy, not the channel-feed copy.  
+**Cause (3):** Replacing `say()` with direct `client.chat_postMessage()` failed silently — no placeholder, no reply. Likely a `chat:write` vs `chat:write.public` scope issue. Bolt's `say()` is pre-scoped to the event's channel context and works reliably.  
+**Fix:** Use `say()` with **no `thread_ts`** for all Q&A responses. Post the ⏳ placeholder with `say()`, get the `ts`, then replace it with `client.chat_update()` once the answer is ready.  
+**Rule for future sessions:** Always use `say()` for first contact in event handlers. Only use `client.chat_postMessage()` to post to a *different* channel (e.g. reminder DMs sent from the scheduler).  
+**Commits:** `f51bee1`, `d0349ea`
+
 ### New feature — Feedback learning system
 Every Q&A answer now shows 👍/👎 buttons. Ratings are stored in the Supabase `feedback` table. Future Q&A calls retrieve the top 3 positively-rated answers for similar questions and include them as extra Claude context — the bot improves with use.
 
@@ -337,7 +345,7 @@ After regenerating: update all Railway environment variables (Variables tab → 
 ## 13. Outstanding Tasks
 
 1. **🔴 Rotate all credentials** (Section 12) — highest priority
-2. **🟡 Merge PR #14** — `claude/quirky-ride-rFUxU` → `main`. Contains INC-016 through INC-021 fixes + feedback learning system. Railway auto-deploys on merge.
+2. **🟡 Re-add feedback learning system** — `feedback_store.py` exists in the repo, Supabase `feedback` table is live, but the integration code was lost in the session-3 rollback. Re-add `import feedback_store`, `_answer_blocks()`, feedback action handlers, and the `get_relevant()` call in `_qa_answer`. Use session-2 commits (`2182dcd`) as reference.
 3. **🟡 Keep INCIDENT_REPORT.md synced to Notion** — after each set of fixes, paste/update the Notion page so the bot can answer troubleshooting questions about its own history.
 4. **🟡 Install Claude skills on new machine** — after cloning repo, run:
    ```bash
@@ -395,48 +403,53 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | Some DMs randomly dropped | Receive thread blocked | Fixed in INC-018 (`67edeae`) — thread pool |
 | 15–20 s lag, no user feedback | Placeholder posted too late | Fixed in INC-019 + INC-021 |
 | Bot works once then ignores everything | History corruption after Claude API error | Fixed in INC-020 (`2182dcd`) — `history.pop()` on failure |
+| Replies go to thread, not main chat | `say(thread_ts=...)` or `client.chat_postMessage()` used | Fixed in INC-022 — use `say()` with no `thread_ts`; update with `chat_update` |
+| No reply at all after switching to `client.chat_postMessage()` | Scope / membership issue; fails silently | Always use `say()` in event handlers (INC-022) |
 | No 🤔 emoji while bot is thinking | `reactions:write` scope not granted | Add scope in Slack App → OAuth & Permissions → Reinstall App |
 | Build takes 5+ minutes | sentence-transformers in requirements.txt | Remove it — it should NOT be there |
 
 ---
 
-## 15. Live Status (May 26, 2026 — session 2 end)
+## 15. Live Status (May 27, 2026 — session 3 end)
 
-- **Latest commit:** `fe09c4a` — Post ⏳ placeholder instantly (INC-021)
-- **Active branch:** `claude/quirky-ride-rFUxU` — PR #14 open, ready to merge to `main`
-- **Railway:** Deployed from `main` (`6645563`) — PR #14 not yet merged; deploy after merge
-- **Supabase:** `SUPABASE_SERVICE_KEY` = correct service_role JWT ✅ — both tables live (`reminders`, `feedback`)
+- **Latest commit:** `d0349ea` — ⏳ placeholder via say() + chat_update (INC-022 final fix)
+- **Branch:** all changes are on `main` — Railway auto-deploys on push
+- **Railway:** ✅ Deployed and running
+- **Supabase:** ✅ `SUPABASE_SERVICE_KEY` = service_role JWT — both tables live (`reminders`, `feedback`)
 - **NOTION_TOKEN:** ✅ Set in Railway
-- **Notion pages connected:** ✅ Document Hub database (auto-propagates to child pages)
+- **Notion pages connected:** ✅ Document Hub database
 - **Reminders:** ✅ Persist across redeployments
-- **Q&A:** ✅ Live — Notion + Claude, with parallel page fetching
-- **Feedback learning:** ✅ Code ready in PR #14 — 👍/👎 buttons, Supabase feedback table
-- **Dismiss button:** ✅ All confirmation messages
+- **Q&A:** ✅ Replies in main channel (no threading), ⏳ placeholder, thread pool, history corruption fixed
+- **Feedback learning:** ⚠️ Code was written (session 2) but was included in the rolled-back PRs. Not currently active on main. Re-add from `feedback_store.py` + session-2 commits when stable.
+- **Dismiss button:** ✅ All reminder confirmations
 
-**Session 2 commits on `claude/quirky-ride-rFUxU` (oldest → newest):**
+**Session 3 commits on `main` (oldest → newest):**
 | Commit | Change |
 |--------|--------|
-| `7b7f0a6` | Fix mobile @mention format (INC-016) |
-| `34f14b2` | Add reply_broadcast=True for mobile visibility (INC-017) |
-| `67edeae` | ThreadPoolExecutor: prevent DM drops (INC-018) |
-| `2306982` | Immediate placeholder + parallel Notion fetches (INC-019) |
-| `2182dcd` | History corruption fix + feedback learning system (INC-020) |
-| `fe09c4a` | Placeholder moved to event handler (INC-021) |
+| `a533cb2` | Thread pool + history fix + mobile mention + no thread_ts baseline |
+| `86f83c1` | Remove reply_broadcast; post answer as plain channel message |
+| `f51bee1` | Switch to say() — fixes silent failure of chat_postMessage (INC-022) |
+| `d0349ea` | Add ⏳ placeholder using say(); replace with chat_update |
 
-**To test reminders:**
-1. In any Slack channel: `@UAEOPS_Bot remind me`
-2. Pick a preset time or click "Custom time..."
-3. Picker updates in-place → "✅ Got it! I'll remind you on..." + ✕ Dismiss button
-4. Wait for scheduled time → DM arrives with link to original message
+**Critical rule learned (INC-022):**
+> Always use `say()` for posting in event handlers (`app_mention`, `message`).  
+> `client.chat_postMessage()` fails silently in some channel contexts.  
+> Use `client.chat_postMessage()` only for posting to a **different** channel (e.g. reminder DMs from the scheduler).
 
 **To test Q&A:**
-1. DM the bot or `@UAEOPS_Bot <question>` in a channel
-2. ⏳ placeholder appears within ~200 ms
-3. Answer updates in-place with 👍/👎 feedback buttons
-4. Click 👍 — buttons replaced with "👍 Feedback recorded — thank you!"
-5. If "couldn't find anything" — check Notion page is connected (page → `···` → Connections → UAEOPS_bot)
+1. `@UAEOPS_Bot <question>` in a channel — or DM the bot
+2. ⏳ appears immediately in chat
+3. ⏳ updates to the answer in-place (same message, no thread)
+4. If "couldn't find anything" → check Notion page is connected (page → `···` → Connections → UAEOPS_bot)
+
+**To test reminders:**
+1. `@UAEOPS_Bot remind me` in any channel
+2. Time picker appears in thread (correct — reminder pickers are thread-contextual)
+3. Pick time → "✅ Got it! I'll remind you on..." + ✕ Dismiss
+4. At scheduled time → DM arrives with link to original message
 
 **Next action for a new session:**
-1. Merge PR #14 → Railway auto-deploys
-2. Test the bot in Slack (DM + @mention + reminder)
+1. Test bot in Slack — confirm ⏳ and answer appear in chat
+2. Re-add feedback learning system (`feedback_store.py` + `_answer_blocks` + action handlers) — it was working code, just rolled back during debugging
+3. Rotate credentials (Section 12) if not already done
 3. Rotate credentials from Section 12 if not already done

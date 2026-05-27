@@ -1,7 +1,7 @@
 # UAEOPS Bot — Incident Report & Fix Log
 
 > All known bugs, root causes, and fixes. Used by the bot as a troubleshooting knowledge base.
-> Last updated: May 26, 2026 (INC-021)
+> Last updated: May 27, 2026 (INC-022)
 
 ---
 
@@ -275,6 +275,45 @@ with ThreadPoolExecutor(max_workers=min(len(pages), 5)) as ex:
 
 ---
 
+## INC-022 — Bot Replies Going to Thread Instead of Main Chat
+
+**Symptom:** Bot answers appeared only in the thread (right-side panel / "thread history") rather than in the main channel conversation. Users on mobile especially missed responses entirely.
+
+**Root cause:** `say(thread_ts=event["ts"])` was used for all Q&A replies in `_process_mention`. The `thread_ts` parameter posts the message as a thread reply, not as a regular channel message. Without it, `say()` posts directly into the channel conversation.
+
+**What didn't work (dead ends to avoid):**
+
+1. `reply_broadcast=True` — This creates a special "thread broadcast" copy in the channel, but it renders differently from normal messages and users don't recognise it as a chat reply. When combined with `chat_update` it's even worse: `chat_update` only updates the thread copy; the channel-feed broadcast copy is a separate message entity that never gets updated.
+
+2. `client.chat_postMessage(channel=channel, text=answer)` directly — Failed silently in the event-handler context (no ⏳ appeared, no answer appeared). Root cause unclear; likely a channel membership or permission scope issue (`chat:write` vs `chat:write.public`). Bolt's `say()` uses the same underlying call but works reliably because it is pre-scoped to the event's channel and workspace context.
+
+**Fix:**
+- Use `say()` with **no `thread_ts`** for all Q&A answers — reply appears as a normal channel message.
+- Use `say()` (not `client.chat_postMessage`) for the ⏳ placeholder too.
+- Use `client.chat_update()` to replace the placeholder in-place once the answer is ready — this works correctly because `chat_update` and the original `say()` call share the same channel context.
+
+```python
+# In handle_mention / handle_dm event handler:
+resp           = say(text="⏳ Searching the knowledge base...")
+placeholder_ts = resp.get("ts")
+_pool.submit(_process_mention, event, say, client, placeholder_ts)
+
+# In _process_mention worker:
+answer = _qa_answer(channel, clean)
+if placeholder_ts:
+    client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+else:
+    say(text=answer)  # fallback
+```
+
+**Rule:** Always use `say()` for first contact in an event handler. Only use `client.chat_postMessage()` when you need to post to a *different* channel than the event channel (e.g. sending a reminder DM from the scheduler).
+
+**Files:** `app.py` → `handle_mention`, `handle_dm`, `_process_mention`, `_process_dm`  
+**Commits:** `f51bee1`, `d0349ea`  
+**Status:** ✅ Resolved
+
+---
+
 ## INC-021 — No Feedback When Sending Multiple Messages Quickly
 
 **Symptom:** When messages were sent faster than the bot could reply (rapid-fire questions), later messages queued silently — no ⏳ placeholder, no reply, nothing visible in Slack. Users assumed the bot had crashed.  
@@ -337,3 +376,4 @@ except Exception:
 | Bot ignores all messages after first reply | History corruption in `_qa_answer` | Fixed in INC-020 — Claude API failure now pops orphaned history entry |
 | Bot doesn't respond from mobile @mention | Mobile mention format `<@UID\|name>` not matched | Fixed in INC-016 — regex handles both desktop and mobile formats |
 | No ⏳ feedback when sending messages quickly | Placeholder posted in pool worker, not event handler | Fixed in INC-021 — placeholder now posted before `_pool.submit()` |
+| Replies go to thread, not main chat | `thread_ts` set on `say()` / `client.chat_postMessage()` used instead of `say()` | Fixed in INC-022 — use `say()` with no `thread_ts`; update placeholder with `chat_update` |
