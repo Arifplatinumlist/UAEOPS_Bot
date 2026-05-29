@@ -1,6 +1,6 @@
 # UAEOPS_Bot — Full Session Handover
 
-> Last updated: May 27, 2026 (session 4 — INC-022, INC-023, feedback learning integration)
+> Last updated: May 29, 2026 (session 4 — INC-022, INC-023, feedback learning, Slack CLI guide)
 > Status: **✅ LIVE on Railway** — bot is running 24/7, no local terminal needed
 > Written for: any new Claude session, any computer, fresh start
 
@@ -48,6 +48,7 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 | `migrations/001_create_knowledge_base.sql` | Schema for reminders table |
 | `migrations/002_create_feedback.sql` | Schema for feedback table |
 | `INCIDENT_REPORT.md` | Full bug history — also serves as the bot's troubleshooting knowledge base in Notion |
+| `SLACK_CLI_GUIDE.md` | Step-by-step guide: Homebrew, Slack CLI install, login, message deletion, security rules |
 | `DRAFT_README.md` | Team-facing README — drafted, awaiting review before replacing README.md |
 
 ---
