@@ -1,8 +1,149 @@
-# Slack CLI Guide — UAEOPS Bot Terminal Access
+# Slack CLI Guide — Install, Login & Manage Any Slack Bot
 
-> Purpose: Step-by-step guide to access and manage the UAEOPS Slack bot from any Mac terminal.
-> Audience: Engineers, ops team, and Claude (AI assistant) onboarding to a new session.
+> Purpose: Step-by-step guide to install the Slack CLI on any Mac and manage your Slack bot from the terminal.
+> Audience: Anyone setting up their own Slack bot — no prior experience needed.
 > Last updated: May 29, 2026
+
+---
+
+## Understanding the Key Terms — Read This First
+
+Before diving into installation, it helps to understand what each piece of the puzzle actually is. This section explains every term you'll encounter in plain language.
+
+---
+
+### What is a Slack Bot?
+
+A Slack bot is a software program that lives inside your Slack workspace and can send messages, respond to questions, set reminders, post alerts, and more. It behaves like a user but is fully automated.
+
+To build one, you register it at https://api.slack.com/apps — Slack gives you a **bot token** (a secret key) that your code uses to talk to Slack on the bot's behalf.
+
+---
+
+### What is a Bot Token?
+
+A bot token is a long string starting with `xoxb-`. It is the password your bot uses to authenticate with Slack. Anyone who has this token can send messages, delete messages, and read channels as your bot.
+
+- Keep it secret — never paste it in a chat or email
+- If leaked, go to api.slack.com/apps → Reinstall App to generate a new one
+- There are different token types — only `xoxb-` is the bot token. `xapp-` is for Socket Mode connections only and won't work for API calls.
+
+---
+
+### What is the Slack CLI?
+
+The Slack CLI (`slack`) is a command-line tool that lets you interact with Slack directly from your Mac terminal. With it you can:
+
+- Authenticate as yourself or as your bot
+- List messages in any channel
+- Delete messages your bot posted
+- Call any Slack API method without writing code
+
+It is installed via Homebrew and is completely separate from the Slack desktop app.
+
+---
+
+### What is Railway — and Why Is It Referenced Here?
+
+**Railway** (railway.com) is a cloud hosting platform. When your Slack bot's code is deployed to Railway, it runs on Railway's servers 24 hours a day, 7 days a week — even when your laptop is off.
+
+This guide references Railway because it is one of the most common ways to keep a Slack bot running continuously. The bot token (`xoxb-...`) is stored in Railway's environment variables, which is why instructions like "get your token from Railway" appear throughout.
+
+**If your bot is NOT on Railway**, the token is wherever you deployed it — see the hosting options section below.
+
+---
+
+### What is GitHub — and Does It Host the Bot?
+
+**GitHub** is where the bot's code is stored (like a code library or version control). It does NOT run the bot. Think of GitHub as the filing cabinet where the instructions live, and Railway (or another server) as the worker who actually follows those instructions.
+
+When you push new code to GitHub, Railway detects the change and automatically redeploys the bot with the updated code. That's the only connection between the two.
+
+---
+
+## Hosting Options — Where Should Your Bot Run?
+
+Your bot needs to run on a server somewhere so it stays online. Here are your main options:
+
+---
+
+### Option 1 — Railway (Recommended for most people)
+
+Railway hosts your bot in the cloud. You push your code to GitHub, connect Railway to that repo, and Railway keeps it running automatically.
+
+| | |
+|---|---|
+| ✅ Always online | Runs 24/7 even when your laptop is off |
+| ✅ Auto-redeploys | Push new code → Railway rebuilds and restarts automatically |
+| ✅ No setup overhead | No need to manage servers, ports, or infrastructure |
+| ✅ Easy env vars | Store your bot token and secrets in Railway's Variables tab |
+| ❌ Costs money | Free tier is limited; ~$5/month for a small always-on bot |
+| ❌ Not instant | Each redeploy takes ~45 seconds of downtime |
+
+**How to get your bot token from Railway:**
+Railway → your project → service → Variables tab → copy `SLACK_BOT_TOKEN`
+
+---
+
+### Option 2 — Run From Your Laptop / Home Computer
+
+You can run the bot directly from your terminal with `python app.py` (or whatever your bot's start command is). As long as that terminal window stays open, the bot is online.
+
+| | |
+|---|---|
+| ✅ Free | No hosting costs at all |
+| ✅ Instant changes | Edit code and restart — no deploy wait |
+| ✅ Full control | You see logs in real time, easy to debug |
+| ❌ Not 24/7 | Bot goes offline the moment you close the laptop or lose internet |
+| ❌ Your IP changes | Home internet IPs change periodically, which can cause connection issues |
+| ❌ Sleep/restart kills it | Mac sleep mode stops the process |
+| ❌ Not production-ready | Fine for testing, not reliable for a team depending on it |
+
+**How to run locally:**
+```bash
+cd your-bot-folder
+pip install -r requirements.txt
+python app.py
+```
+
+Your bot token lives in a local `.env` file in this case:
+```
+SLACK_BOT_TOKEN=xoxb-your-token-here
+SLACK_APP_TOKEN=xapp-your-token-here
+```
+
+---
+
+### Option 3 — A Dedicated Home Server (Raspberry Pi, old Mac, etc.)
+
+If you have a spare computer you can leave plugged in and always on, you can run the bot on it permanently for free. This gives you 24/7 uptime without paying for Railway.
+
+| | |
+|---|---|
+| ✅ Free after hardware cost | No monthly fees |
+| ✅ Always on (if configured correctly) | Can run 24/7 |
+| ❌ Power cuts / internet drops kill it | No automatic recovery unless you set it up |
+| ❌ Requires technical setup | Need to configure auto-start on boot, port forwarding, etc. |
+| ❌ Maintenance burden | OS updates, hardware failures are your responsibility |
+
+---
+
+### Option 4 — Other Cloud Platforms
+
+Railway is not the only option. Other platforms that work the same way:
+
+| Platform | Free tier | Notes |
+|----------|-----------|-------|
+| Render | Yes (spins down after inactivity) | Good Railway alternative |
+| Heroku | No free tier anymore | Used to be the standard |
+| Fly.io | Yes (limited) | Good for lightweight bots |
+| AWS / GCP / Azure | Free tier available | More complex to set up |
+
+In all cases, the bot token is stored in the platform's environment variables section, not hard-coded in the code.
+
+---
+
+> **Summary:** If you want the bot online 24/7 without thinking about it → use Railway. If you're just testing or developing → run it locally from your laptop. If you want free 24/7 → use a spare computer or Render's free tier.
 
 ---
 
