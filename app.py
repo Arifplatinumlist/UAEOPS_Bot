@@ -12,6 +12,7 @@ import conversation
 import agents.reminder_agent as reminder_agent
 import agents.qa_agent as qa_agent
 import agents.alert_agent as alert_agent
+import agents.monitor_agent as monitor_agent
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -154,9 +155,21 @@ def _process_dm(event, say, client, placeholder_ts):
 
 
 @slack_app.event("message")
-def handle_dm(event, say, client):
-    if event.get("bot_id") or event.get("subtype") or event.get("channel_type") not in ("im", "mpim"):
+def handle_message(event, say, client):
+    channel_id = event.get("channel", "")
+    subtype    = event.get("subtype")
+    bot_id     = event.get("bot_id")
+
+    # Route monitored channels to monitor_agent (includes bot messages from addy)
+    if channel_id in monitor_agent.WATCH_CHANNEL_IDS:
+        if subtype not in ("message_changed", "message_deleted"):
+            _pool.submit(monitor_agent.process_message, client, event, channel_id)
         return
+
+    # DMs — skip bot messages and non-content subtypes
+    if bot_id or subtype or event.get("channel_type") not in ("im", "mpim"):
+        return
+
     placeholder_ts = None
     try:
         placeholder_ts = say(text="⏳ Searching...").get("ts")
@@ -357,6 +370,7 @@ if __name__ == "__main__":
     reminder_agent.init(slack_app.client)
     reminder_agent.scheduler.start()
     reminder_agent.load_pending_reminders()
+    _pool.submit(monitor_agent.startup_lookback, slack_app.client)
 
     # Start Notion → vector store background sync if Voyage AI is configured
     if os.environ.get("VOYAGE_API_KEY") and os.environ.get("NOTION_TOKEN"):
@@ -374,5 +388,5 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("Could not schedule Notion sync: %s", e)
 
-    logger.info("UAEOPS Bot v2 — agents: reminder | qa (semantic) | alert | router")
+    logger.info("UAEOPS Bot v2 — agents: reminder | qa (semantic) | alert | monitor | router")
     SocketModeHandler(slack_app, os.environ["SLACK_APP_TOKEN"]).start()
