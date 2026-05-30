@@ -1,6 +1,7 @@
 # UAEOPS_Bot — Full Session Handover
 
-> Last updated: May 26, 2026
+> Last updated: May 30, 2026
+> Architecture: **V2 — Multi-agent (Option C)**
 > Status: **✅ LIVE on Railway** — bot is running 24/7, no local terminal needed
 > Written for: any new Claude session, any computer, fresh start
 
@@ -8,11 +9,15 @@
 
 ## 1. What This Bot Does
 
-UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
+UAEOPS_Bot is a Slack bot for the UAE operations team. It has three features, handled by internal agents:
 
-1. **Reminders** — Mention `@UAEOPS_Bot remind me` in any channel. The bot shows a time-picker (30 min / 1 hour / 4 hours / Tomorrow 9am / Custom). At the scheduled time, the bot sends a DM with a link back to the original message. Reminders survive redeployments — they are stored in Supabase.
+1. **Reminders** — Mention `@UAEOPS_Bot remind me` in any channel. The bot shows a time-picker (30 min / 1 hour / 4 hours / Tomorrow 9am / Custom). At the scheduled time, the bot sends a DM with a link back to the original message. Reminders survive redeployments — stored in Supabase.
 
-2. **Knowledge Base Q&A** — Mention `@UAEOPS_Bot` with a question, or DM the bot directly. The bot searches your connected Notion pages and passes matching content to Claude to generate an answer, then replies in the thread.
+2. **Knowledge Base Q&A** — Mention `@UAEOPS_Bot` with a question, or DM the bot directly. The bot searches connected Notion pages and answers via Claude.
+
+3. **Alert Triage** — Paste a system alert or error into Slack. The bot searches KB for matching runbooks and returns a structured triage: alert summary, likely cause, immediate action, escalation contact, runbook link.
+
+All three features route automatically — users just talk to one `@UAEOPS_Bot`.
 
 ---
 
@@ -21,12 +26,29 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 | Component | Technology |
 |-----------|-----------|
 | Bot framework | Python, Slack Bolt SDK (Socket Mode) |
+| Intent routing | Claude Haiku (`claude-haiku-4-5`) — classifies reminder / alert / qa |
 | Reminder scheduling | APScheduler (`BackgroundScheduler`, `Asia/Dubai` timezone) |
 | Reminder storage | Supabase REST API (survives Railway redeployments) |
 | Knowledge base | Notion REST API (`POST /v1/search` + block fetching) |
-| AI answers | Anthropic Claude (`claude-sonnet-4-6` default) |
+| AI answers / triage | Anthropic Claude (`claude-sonnet-4-6` default) |
 | Deployment | Railway (worker process, no HTTP port) |
-| Image size | ~200 MB (no PyTorch — sentence-transformers removed) |
+| Image size | ~200 MB (no PyTorch) |
+
+## 2a. V2 Agent Architecture
+
+```
+app.py  (Slack plumbing only)
+  └── router.py  (intent: reminder | alert | qa | unknown)
+        ├── agents/reminder_agent.py  (Supabase + APScheduler + Block Kit)
+        ├── agents/alert_agent.py     (KB search → Claude triage)
+        └── agents/qa_agent.py        (KB search → Claude answer)
+                   └── agents/kb_agent.py  (Notion search — used by qa + alert)
+
+conversation.py  (per-channel history store — used by qa_agent only)
+history/         (archived V1 files + ARCHITECTURE_V1.md with flow diagrams)
+```
+
+**Key rule:** each agent file has one job and no knowledge of sibling agents. To add a new feature, create a new file in `agents/`, add one label to `router.py`, add one `elif` in `app.py`. Nothing else changes.
 
 ---
 
@@ -39,12 +61,16 @@ UAEOPS_Bot is a Slack bot for the UAE operations team. It has two core features:
 
 | File | Purpose |
 |------|---------|
-| `app.py` | All Slack event handlers, reminder logic, Q&A logic |
-| `reminders.py` | Reminder CRUD — Supabase REST API via `requests` |
-| `knowledge_base.py` | Notion search — `POST /v1/search` + block fetching |
-| `requirements.txt` | Python dependencies (no sentence-transformers, no supabase SDK) |
+| `app.py` | Slack event handlers + action decorators only (~130 lines) |
+| `router.py` | Intent classification via Claude Haiku |
+| `conversation.py` | Per-channel conversation history store |
+| `agents/kb_agent.py` | Notion search — single responsibility |
+| `agents/reminder_agent.py` | All reminder logic: Supabase CRUD, APScheduler, Block Kit |
+| `agents/qa_agent.py` | Q&A: KB search + Claude answer |
+| `agents/alert_agent.py` | Alert triage: KB search + Claude structured response |
+| `history/` | Archived V1 files (`app_v1.py`, `reminders_v1.py`, `knowledge_base_v1.py`) + `ARCHITECTURE_V1.md` |
+| `requirements.txt` | Python dependencies |
 | `Procfile` | `worker: python app.py` |
-| `DRAFT_README.md` | Team-facing README — drafted, awaiting review before replacing README.md |
 
 ---
 
