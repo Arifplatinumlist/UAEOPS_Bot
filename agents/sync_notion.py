@@ -19,8 +19,8 @@ def sync_all() -> int:
     Fetch all Notion pages, embed and upsert them to the vector store.
     Returns count of pages synced. Safe to call repeatedly — upsert is idempotent.
     """
-    import knowledge_base
-    import vector_store
+    from agents import kb_agent as knowledge_base
+    from agents import vector_store
 
     all_pages, cursor = [], None
     while True:

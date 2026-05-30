@@ -127,3 +127,27 @@ def search(query: str, top_k: int = 5) -> list[dict]:
     except Exception as e:
         logger.error("KB search failed: %s", e)
         return []
+
+
+def search_semantic(query: str, top_k: int = 5) -> list[dict]:
+    """
+    Semantic search using Voyage AI + pgvector when available, falling back to
+    Notion keyword search. Returns same shape as search(): [{title, source, content}].
+    """
+    try:
+        from agents import vector_store
+        if os.environ.get("VOYAGE_API_KEY") and vector_store.is_populated():
+            results = vector_store.search(query, top_k=top_k)
+            if results:
+                logger.info("Vector search %r → %d result(s)", query, len(results))
+                return [
+                    {
+                        "title":   r.get("title", ""),
+                        "source":  r.get("source", ""),
+                        "content": r.get("content", ""),
+                    }
+                    for r in results
+                ]
+    except Exception as e:
+        logger.warning("Vector search failed, falling back to keyword: %s", e)
+    return search(query, top_k=top_k)

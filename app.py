@@ -1,5 +1,7 @@
+import json
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -16,6 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 slack_app = App(token=os.environ["SLACK_BOT_TOKEN"])
+_pool     = ThreadPoolExecutor(max_workers=8)
 
 _bot_uid: Optional[str] = None
 
@@ -43,76 +46,146 @@ def _unreact(client, channel: str, ts: str, emoji: str) -> None:
 
 # ── Slack event handlers ───────────────────────────────────────────────────────
 
-@slack_app.event("app_mention")
-def handle_mention(event, say, client):
+def _process_mention(event, say, client, placeholder_ts):
+    channel = event["channel"]
     try:
         bot_uid  = _get_bot_uid(client)
         raw_text = event.get("text", "")
         clean    = raw_text.replace(f"<@{bot_uid}>", "").strip()
-        channel  = event["channel"]
         ts       = event["ts"]
 
         if not clean:
+            if placeholder_ts:
+                try:
+                    client.chat_update(channel=channel, ts=placeholder_ts, text="Hi! Ask me anything.")
+                    return
+                except Exception:
+                    pass
             say("Hi! Ask me anything.", thread_ts=ts)
             return
 
         intent = route(clean)
 
         if intent == "reminder":
+            if placeholder_ts:
+                try:
+                    client.chat_delete(channel=channel, ts=placeholder_ts)
+                except Exception:
+                    pass
             reminder_agent.handle(event, say, client)
             return
 
-        _react(client, channel, ts, "thinking_face")
-        try:
-            if intent == "alert":
-                reply = alert_agent.handle(channel, clean)
-            else:
-                history = conversation.get(channel)
-                reply, history = qa_agent.handle(channel, clean, history)
-                conversation.update(channel, history)
-            say(text=reply, thread_ts=ts)
-        finally:
-            _unreact(client, channel, ts, "thinking_face")
+        if intent == "alert":
+            reply = alert_agent.handle(channel, clean)
+            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": reply}}]
+            feedback_id = None
+        else:
+            history = conversation.get(channel)
+            reply, history, feedback_id = qa_agent.handle(channel, clean, history)
+            conversation.update(channel, history)
+            blocks = qa_agent.answer_blocks(reply, feedback_id)
+
+        if placeholder_ts:
+            try:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=reply, blocks=blocks)
+                return
+            except Exception:
+                pass
+        say(text=reply, blocks=blocks, thread_ts=ts)
 
     except Exception as e:
         logger.error("handle_mention error: %s", e, exc_info=True)
         try:
-            say(text="Something went wrong — please try again.", thread_ts=event.get("ts"))
+            msg = "Something went wrong — please try again."
+            if placeholder_ts:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=msg)
+            else:
+                say(text=msg, thread_ts=event.get("ts"))
+        except Exception:
+            pass
+
+
+@slack_app.event("app_mention")
+def handle_mention(event, say, client):
+    placeholder_ts = None
+    try:
+        placeholder_ts = say(text="⏳ Searching...", thread_ts=event["ts"]).get("ts")
+    except Exception:
+        pass
+    _pool.submit(_process_mention, event, say, client, placeholder_ts)
+
+
+def _process_dm(event, say, client, placeholder_ts):
+    channel = event["channel"]
+    try:
+        question = event.get("text", "").strip()
+        if not question:
+            return
+
+        intent = route(question)
+
+        if intent == "alert":
+            reply = alert_agent.handle(channel, question)
+            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": reply}}]
+        else:
+            history = conversation.get(channel)
+            reply, history, feedback_id = qa_agent.handle(channel, question, history)
+            conversation.update(channel, history)
+            blocks = qa_agent.answer_blocks(reply, feedback_id)
+
+        if placeholder_ts:
+            try:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=reply, blocks=blocks)
+                return
+            except Exception:
+                pass
+        say(text=reply, blocks=blocks)
+
+    except Exception as e:
+        logger.error("handle_dm error: %s", e, exc_info=True)
+        try:
+            msg = "Something went wrong — please try again."
+            if placeholder_ts:
+                client.chat_update(channel=channel, ts=placeholder_ts, text=msg)
+            else:
+                say(text=msg)
         except Exception:
             pass
 
 
 @slack_app.event("message")
 def handle_dm(event, say, client):
+    if event.get("bot_id") or event.get("subtype") or event.get("channel_type") not in ("im", "mpim"):
+        return
+    placeholder_ts = None
     try:
-        if event.get("bot_id") or event.get("subtype") or event.get("channel_type") != "im":
-            return
+        placeholder_ts = say(text="⏳ Searching...").get("ts")
+    except Exception:
+        pass
+    _pool.submit(_process_dm, event, say, client, placeholder_ts)
 
-        question = event.get("text", "").strip()
-        if not question:
-            return
 
-        channel = event["channel"]
-        intent  = route(question)
+# ── Feedback action handlers ───────────────────────────────────────────────────
 
-        _react(client, channel, event["ts"], "thinking_face")
-        try:
-            if intent == "alert":
-                reply = alert_agent.handle(channel, question)
-            else:
-                history = conversation.get(channel)
-                reply, history = qa_agent.handle(channel, question, history)
-                conversation.update(channel, history)
-            say(text=reply)
-        finally:
-            _unreact(client, channel, event["ts"], "thinking_face")
-
+@slack_app.action("feedback_positive")
+@slack_app.action("feedback_negative")
+def handle_feedback(ack, body, respond):
+    ack()
+    try:
+        from agents import feedback_store
+        action    = body["actions"][0]
+        rating    = "positive" if action["action_id"] == "feedback_positive" else "negative"
+        feedback_id = action["value"]
+        user_id   = body["user"]["id"]
+        feedback_store.rate(feedback_id, user_id, rating)
+        icon = "👍" if rating == "positive" else "👎"
+        respond(
+            replace_original=False,
+            text=f"{icon} Thanks for the feedback!",
+            response_type="ephemeral",
+        )
     except Exception as e:
-        logger.error("handle_dm error: %s", e, exc_info=True)
-        try:
-            say(text="Something went wrong — please try again.")
-        except Exception:
-            pass
+        logger.warning("Feedback action failed: %s", e)
 
 
 # ── Reminder action handlers ───────────────────────────────────────────────────
@@ -167,14 +240,13 @@ def handle_remind_custom_open(ack, body, client):
     count = ctx.pop("count", 0)
     remaining = reminder_agent.MAX_REMINDERS - count
     ctx["picker_ts"] = body.get("message", {}).get("ts", "")
-    ctx_str = json.dumps(ctx)
 
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
             "type":             "modal",
             "callback_id":      "remind_custom_modal",
-            "private_metadata": ctx_str,
+            "private_metadata": json.dumps(ctx),
             "title":  {"type": "plain_text", "text": "Set a reminder"},
             "submit": {"type": "plain_text", "text": "Set reminder"},
             "close":  {"type": "plain_text", "text": "Cancel"},
@@ -285,5 +357,22 @@ if __name__ == "__main__":
     reminder_agent.init(slack_app.client)
     reminder_agent.scheduler.start()
     reminder_agent.load_pending_reminders()
-    logger.info("UAEOPS Bot v2 starting — agents: reminder | qa | alert | router active")
+
+    # Start Notion → vector store background sync if Voyage AI is configured
+    if os.environ.get("VOYAGE_API_KEY") and os.environ.get("NOTION_TOKEN"):
+        try:
+            from agents import sync_notion
+            _pool.submit(sync_notion.sync_all)
+            reminder_agent.scheduler.add_job(
+                sync_notion.sync_all,
+                trigger="interval",
+                hours=6,
+                id="notion_sync",
+                replace_existing=True,
+            )
+            logger.info("Notion → vector store sync scheduled (startup + every 6h)")
+        except Exception as e:
+            logger.warning("Could not schedule Notion sync: %s", e)
+
+    logger.info("UAEOPS Bot v2 — agents: reminder | qa (semantic) | alert | router")
     SocketModeHandler(slack_app, os.environ["SLACK_APP_TOKEN"]).start()

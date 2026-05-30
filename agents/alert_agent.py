@@ -56,10 +56,10 @@ def handle(channel_id: str, alert_text: str) -> str:
     Each alert is independent — no conversation history.
     """
     # Two searches: raw alert text + extracted service name
-    results = kb_agent.search(alert_text[:300])
+    results = kb_agent.search_semantic(alert_text[:300])
     service = _extract_service(alert_text)
     if service:
-        extra = kb_agent.search(service, top_k=3)
+        extra = kb_agent.search_semantic(service, top_k=3)
         seen_urls = {r["source"] for r in results}
         for r in extra:
             if r["source"] not in seen_urls:
