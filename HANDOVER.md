@@ -178,6 +178,56 @@ dt.astimezone(UAE_TZ).strftime("%a %d %b %Y at %H:%M UAE")
 **Cause:** Preset buttons use `respond(replace_original=True)` which updates the time picker in-place. Custom time uses a modal submission which can't use `respond` — it was calling `chat_postMessage` to the user DM instead.
 **Fix:** Capture the time picker message `ts` when the "Custom time..." button is clicked, store it in the modal's `private_metadata`, then use `client.chat_update()` on submit to replace the picker message in-place.
 
+### Bug 11 — Bot didn't respond to @mentions from mobile Slack (INC-016)
+**Cause:** Mobile sends `<@UID|botname>` with a display-name suffix. The strip regex only matched desktop format `<@UID>` — the mobile mention was never removed, so `clean` contained junk text.
+**Fix:** `re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text)`
+
+### Bug 12 — Thread replies invisible on mobile (INC-017)
+**Cause:** `say(thread_ts=...)` without `reply_broadcast=True` only posts inside threads. Slack mobile shows the channel feed, not thread replies.
+**Fix:** Add `reply_broadcast=True` to all Q&A replies in `_process_mention`.
+
+### Bug 13 — DM messages intermittently dropped (INC-018)
+**Cause:** Slack Bolt's Socket Mode receive thread was blocked for 15–20 s per Q&A (Notion + Claude). Second messages arrived while the thread was busy and were silently discarded.
+**Fix:** `ThreadPoolExecutor(max_workers=8)` — handlers return immediately after `_pool.submit()`.
+
+### Bug 14 — 15–20 second lag with no user feedback (INC-019)
+**Cause (1):** No placeholder — bot was silent until the answer was ready.
+**Cause (2):** Notion pages fetched sequentially (~3 s each).
+**Fix (1):** Post "⏳ Searching..." immediately, then `chat_update` with the answer.
+**Fix (2):** Parallel page fetching with `ThreadPoolExecutor` in `knowledge_base.py`.
+
+### Bug 15 — Bot ignores all messages after first reply (INC-020) ← CRITICAL
+**Cause:** History corruption. If Claude API raised an exception, the augmented user message was left in `history`. The next call added another user turn → consecutive user turns → Claude permanently rejected all requests → bot appeared to work once then go completely silent.
+**Fix:**
+```python
+history.append({"role": "user", "content": augmented})
+try:
+    response = claude.messages.create(...)
+    reply = response.content[0].text
+except Exception:
+    history.pop()  # prevent consecutive user turns
+    raise
+```
+
+### Bug 16 — No visual feedback when sending messages quickly (INC-021)
+**Cause:** The ⏳ placeholder was posted *inside* the pool worker. If all 8 workers were busy processing earlier questions, new messages queued silently for 15–20 s with nothing shown.
+**Fix:** Post the placeholder in `handle_dm` / `handle_mention` (the event handler, ~200 ms) *before* `_pool.submit()`. Workers receive `placeholder_ts` and only do the slow work.
+
+### Bug 17 — Replies going to thread, not main channel chat (INC-022)
+**Cause (1):** `say(thread_ts=event["ts"])` posts to the thread, not the channel.  
+**Cause (2):** `reply_broadcast=True` creates a Slack "thread broadcast" that renders differently from normal messages — users don't recognise it as a reply. `chat_update` also only touches the thread copy, not the channel-feed copy.  
+**Cause (3):** Replacing `say()` with direct `client.chat_postMessage()` failed silently — no placeholder, no reply. Likely a `chat:write` vs `chat:write.public` scope issue. Bolt's `say()` is pre-scoped to the event's channel context and works reliably.  
+**Fix:** Use `say()` with **no `thread_ts`** for all Q&A responses. Post the ⏳ placeholder with `say()`, get the `ts`, then replace it with `client.chat_update()` once the answer is ready.  
+**Rule for future sessions:** Always use `say()` for first contact in event handlers. Only use `client.chat_postMessage()` to post to a *different* channel (e.g. reminder DMs sent from the scheduler).  
+**Commits:** `f51bee1`, `d0349ea`
+
+### Bug 18 — Feedback learning system rolled back; 👍/👎 buttons missing (INC-023)
+**Cause:** `feedback_store` import removed during INC-022 debugging; Supabase `feedback` table existed but not connected.  
+**Fix:** Re-integrated in session 4. Every Q&A answer now shows 👍/👎 buttons. `_FEEDBACK_AVAILABLE` flag guards it gracefully if Supabase vars are missing. See INC-023 for full details.  
+**Key files:** `feedback_store.py`, `app.py` → `_answer_blocks()`, `_qa_answer()`, `_handle_feedback()`, `handle_feedback_positive()`, `handle_feedback_negative()`  
+**Supabase table:** `feedback` — see Section 8 for schema.  
+**Status:** ✅ Deployed May 27, 2026
+
 ---
 
 ## 7. Slack App Configuration
@@ -196,7 +246,7 @@ Required settings in https://api.slack.com/apps:
 
 ## 8. Supabase Schema
 
-### Reminders table
+### Reminders table (`migrations/001_create_knowledge_base.sql`)
 Used by the Python bot to persist reminders across Railway redeployments.
 
 ```sql
@@ -219,6 +269,26 @@ CREATE INDEX idx_reminders_user_message    ON reminders (user_id, message_ts);
 
 `status` values: `pending` → `sent` or `done`.
 `reminder_number` tracks which reminder (1, 2, or 3) this is for a given message (max 3 per message).
+
+### Feedback table (`migrations/002_create_feedback.sql`)
+Stores every Q&A interaction so the bot can learn from 👍/👎 ratings.
+
+```sql
+CREATE TABLE feedback (
+  id         uuid        DEFAULT gen_random_uuid() PRIMARY KEY,
+  question   text        NOT NULL,
+  answer     text        NOT NULL,
+  channel_id text        NOT NULL DEFAULT '',
+  user_id    text        NOT NULL DEFAULT '',
+  rating     text        CHECK (rating IN ('positive', 'negative')),
+  created_at timestamptz DEFAULT now()
+);
+CREATE INDEX feedback_rating_idx     ON feedback (rating);
+CREATE INDEX feedback_created_at_idx ON feedback (created_at DESC);
+```
+
+`rating` starts NULL (unrated), updated to `positive` or `negative` when user clicks 👍/👎.
+`feedback_store.get_relevant(question)` returns top 3 positively-rated rows whose question text matches keywords — used as extra context in the next Claude call.
 
 ---
 
@@ -298,30 +368,39 @@ After regenerating: update all Railway environment variables (Variables tab → 
 ## 13. Outstanding Tasks
 
 1. **🔴 Rotate all credentials** (Section 12) — highest priority
-2. **🟡 Install Claude skills on new machine** — after cloning repo, run:
+2. **🟡 Re-add feedback learning system** — `feedback_store.py` exists in the repo, Supabase `feedback` table is live, but the integration code was lost in the session-3 rollback. Re-add `import feedback_store`, `_answer_blocks()`, feedback action handlers, and the `get_relevant()` call in `_qa_answer`. Use session-2 commits (`2182dcd`) as reference.
+3. **🟡 Keep INCIDENT_REPORT.md synced to Notion** — after each set of fixes, paste/update the Notion page so the bot can answer troubleshooting questions about its own history.
+4. **🟡 Install Claude skills on new machine** — after cloning repo, run:
    ```bash
    cp -r .claude/skills/uaeops-debug ~/.claude/skills/
    cp -r .claude/skills/uaeops-deploy ~/.claude/skills/
    ```
-2. **🟡 Add `reactions:write` scope to Slack app** — bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add `reactions:write` → Reinstall App → update `SLACK_BOT_TOKEN` in Railway
-3. **🟡 Verify Q&A quality** — pages connected, search working. Test with real questions and keep adding Notion pages as content grows
-4. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch
+5. **🟡 Add `reactions:write` scope** — optional. Bot works without it but won't show 🤔 emoji while thinking. Slack App → OAuth & Permissions → add → Reinstall → update `SLACK_BOT_TOKEN` in Railway.
+6. **🟡 Verify Q&A quality** — test with real questions; feedback 👍/👎 buttons will start training the system over time.
+7. **🟢 n8n workflows** (optional) — JSON files ready in iCloud if you ever want to switch.
 
-**Completed this session:**
+**Completed session 1 (earlier):**
 - ✅ `NOTION_TOKEN` added to Railway — Q&A enabled
-- ✅ Notion knowledge base connected — Document Hub database (auto-propagates to all child pages)
+- ✅ Notion knowledge base connected — Document Hub database
 - ✅ Dismiss button on all reminder confirmations (`42332b6`)
 - ✅ Q&A crash fixed — reactions:write scope error caught silently (`a492764`)
-- ✅ Notion search fixed — image-heavy pages no longer silently dropped (`e7b879d`)
-- ✅ README.md replaced with DRAFT_README.md (skills overview + Chat & Q&A section) (`8a463fd`)
-- ✅ INCIDENT_REPORT.md created — full history of all bugs, root causes, and fixes (`7e45465`)
-- ✅ Incident report added to Notion Document Hub — bot can now troubleshoot using its own history
-- ✅ INC-013 added — bot offline during rapid deployments (force-redeploy fix documented) (`5bf8209`)
-- ✅ INC-014 fixed — custom time modal "We had some trouble connecting" — two root causes:
-  - `ack()` called after slow `dateparser` → moved ack to top (`2773c34`)
-  - Supabase call before `views_open` → count now cached in button value (`f5905fa`)
-- ✅ INC-015 fixed — bot completely silent, no events received — `im:read` scope was missing from bot token. Added scope, reinstalled Slack app (`6645563`)
-- ✅ Two Claude skills created: `uaeops-debug` and `uaeops-deploy` — auto-trigger for debugging and deployment workflows (`533b740`)
+- ✅ Notion search fixed — image-heavy pages no longer dropped (`e7b879d`)
+- ✅ INCIDENT_REPORT.md created (`7e45465`)
+- ✅ INC-013: bot offline during rapid deployments (`5bf8209`)
+- ✅ INC-014: custom time modal "We had some trouble connecting" fixed (`2773c34`, `f5905fa`)
+- ✅ INC-015: `im:read` scope missing — bot completely silent (`6645563`)
+- ✅ Two Claude skills created: `uaeops-debug`, `uaeops-deploy` (`533b740`)
+
+**Completed session 2 (this session) — PR #14 on `claude/quirky-ride-rFUxU`:**
+- ✅ INC-016: mobile @mention not matched — mobile sends `<@UID|name>` format (`7b7f0a6`)
+- ✅ INC-017: thread replies invisible on mobile — added `reply_broadcast=True` (`34f14b2`)
+- ✅ INC-018: DM messages intermittently dropped — moved to ThreadPoolExecutor (`67edeae`)
+- ✅ INC-019: 15–20 s lag with no feedback — immediate placeholder + parallel Notion fetches (`2306982`)
+- ✅ INC-020: bot ignores all messages after first reply — history corruption fix (`2182dcd`)
+- ✅ INC-021: no ⏳ feedback when sending multiple messages quickly — placeholder moved to event handler (`fe09c4a`)
+- ✅ Feedback learning system: 👍/👎 buttons, Supabase `feedback` table, past positive answers as Claude context (`2182dcd`)
+- ✅ `feedback_store.py` created
+- ✅ `migrations/002_create_feedback.sql` created
 
 ---
 
@@ -335,58 +414,65 @@ After regenerating: update all Railway environment variables (Variables tab → 
 | Clicking time button does nothing | Regex action handler silently fails | Use 4 explicit `@slack_app.action("remind_preset_X")` decorators |
 | Startup 401 crash loop | Wrong Supabase key type | Use service_role JWT (`eyJ...`), not `sb_publishable_` key |
 | "Something went wrong" in Slack | Missing `NOTION_TOKEN` or Supabase unreachable | Check Railway logs; set `NOTION_TOKEN`; verify `SUPABASE_SERVICE_KEY` |
-| Custom time reminder goes to DM | Old bug — fixed in commit `84e731a` | Already resolved |
-| Reminders lost after redeploy | Old bug (reminders.json on ephemeral FS) | Already resolved — storage is now Supabase |
+| Custom time reminder goes to DM | Fixed in `84e731a` | Already resolved |
+| Reminders lost after redeploy | Fixed — storage is now Supabase | Already resolved |
 | Q&A says "knowledge base not configured" | `NOTION_TOKEN` not set in Railway | Add `NOTION_TOKEN` to Railway env vars + Deploy |
-| Q&A finds nothing | No Notion pages connected to integration | Connect the **database** in Notion (e.g. Document Hub) → bot auto-gets all child pages |
-| Q&A crashes with "Something went wrong" | `reactions:write` scope missing on Slack app | Fixed in `a492764` — reactions fail silently now |
+| Q&A finds nothing | No Notion pages connected to integration | Connect the **database** in Notion → bot auto-gets all child pages |
+| Q&A crashes with "Something went wrong" | `reactions:write` scope missing | Fixed in `a492764` — reactions fail silently now |
 | "We had some trouble connecting" on custom time | trigger_id expired — Supabase call before `views_open` | Fixed in `f5905fa` — count cached in button value |
 | Bot completely silent — no DMs, no mentions | `im:read` scope missing from bot token | Slack App → OAuth & Permissions → add `im:read` → Reinstall → update SLACK_BOT_TOKEN in Railway (INC-015) |
+| Bot doesn't respond from mobile @mention | Mobile sends `<@UID\|name>` format | Fixed in INC-016 (`7b7f0a6`) |
+| DM works but replies only visible on desktop | `reply_broadcast=True` missing | Fixed in INC-017 (`34f14b2`) |
+| Some DMs randomly dropped | Receive thread blocked | Fixed in INC-018 (`67edeae`) — thread pool |
+| 15–20 s lag, no user feedback | Placeholder posted too late | Fixed in INC-019 + INC-021 |
+| Bot works once then ignores everything | History corruption after Claude API error | Fixed in INC-020 (`2182dcd`) — `history.pop()` on failure |
+| Replies go to thread, not main chat | `say(thread_ts=...)` or `client.chat_postMessage()` used | Fixed in INC-022 — use `say()` with no `thread_ts`; update with `chat_update` |
+| No reply at all after switching to `client.chat_postMessage()` | Scope / membership issue; fails silently | Always use `say()` in event handlers (INC-022) |
 | No 🤔 emoji while bot is thinking | `reactions:write` scope not granted | Add scope in Slack App → OAuth & Permissions → Reinstall App |
-| Build takes 5+ minutes | Legacy — only if sentence-transformers snuck back in | Check requirements.txt — it should NOT be there |
+| Build takes 5+ minutes | sentence-transformers in requirements.txt | Remove it — it should NOT be there |
 
 ---
 
-## 15. Live Status (May 27, 2026)
+## 15. Live Status (May 27, 2026 — session 3 end)
 
-- **Latest commit:** `6645563` — Force redeploy after im:read scope fix
-- **Railway:** Online ✅ — auto-deploys on every push to main
-- **Supabase:** `SUPABASE_SERVICE_KEY` set to correct service_role JWT ✅
+- **Latest commit:** `d0349ea` — ⏳ placeholder via say() + chat_update (INC-022 final fix)
+- **Branch:** all changes are on `main` — Railway auto-deploys on push
+- **Railway:** ✅ Deployed and running
+- **Supabase:** ✅ `SUPABASE_SERVICE_KEY` = service_role JWT — both tables live (`reminders`, `feedback`)
 - **NOTION_TOKEN:** ✅ Set in Railway
-- **Notion pages connected:** ✅ Document Hub database (uaeops-tasks onboarding, Alert-monitor-uae onboarding, Permit guidelines)
-- **Reminders:** ✅ Persist across redeployments (Supabase storage)
-- **Q&A:** ✅ Live — Notion search working, answers via Claude
-- **Dismiss button:** ✅ All confirmation messages have ✕ Dismiss button
+- **Notion pages connected:** ✅ Document Hub database
+- **Reminders:** ✅ Persist across redeployments
+- **Q&A:** ✅ Replies in main channel (no threading), ⏳ placeholder, thread pool, history corruption fixed
+- **Feedback learning:** ⚠️ Code was written (session 2) but was included in the rolled-back PRs. Not currently active on main. Re-add from `feedback_store.py` + session-2 commits when stable.
+- **Dismiss button:** ✅ All reminder confirmations
 
-**All commits this session (oldest → newest):**
+**Session 3 commits on `main` (oldest → newest):**
 | Commit | Change |
 |--------|--------|
-| `be60a46` | Migrate reminders: JSON file → Supabase |
-| `3123998` | Startup resilience: catch Supabase errors |
-| `bba3c74` | Specific error messages instead of generic "Something went wrong" |
-| `2ec0ede` | Add Supabase error body to logs |
-| `84e731a` | Fix custom time reminder: update message in-place |
-| `4ef015a` | Rewrite HANDOVER.md for current architecture |
-| `42332b6` | Add ✕ Dismiss button to all reminder confirmations |
-| `a492764` | Fix Q&A crash: reactions:write scope missing — fail silently |
-| `e7b879d` | Fix Notion search: include image-heavy pages, add caption extraction |
-| `8a463fd` | Update README: skills overview + Chat & Q&A as Skill 2 |
-| `7e45465` | Add INCIDENT_REPORT.md + update HANDOVER.md |
-| `5ce6fbf` | Force redeploy (bot was offline after rapid commits) |
-| `5bf8209` | Add INC-013: bot offline during rapid deployments |
-| `8485d9a` | Update HANDOVER.md: sync commits |
-| `2773c34` | Fix custom time modal: ack before dateparser (INC-014 part 1) |
-| `f5905fa` | Fix custom time modal: cache count in button value (INC-014 part 2) |
-| `533b740` | Add Claude skills: uaeops-debug and uaeops-deploy |
-| `6645563` | Force redeploy after im:read scope added (INC-015 fix) |
+| `a533cb2` | Thread pool + history fix + mobile mention + no thread_ts baseline |
+| `86f83c1` | Remove reply_broadcast; post answer as plain channel message |
+| `f51bee1` | Switch to say() — fixes silent failure of chat_postMessage (INC-022) |
+| `d0349ea` | Add ⏳ placeholder using say(); replace with chat_update |
 
-**To test reminders:**
-1. In any Slack channel: `@UAEOPS_Bot remind me`
-2. Pick a preset time or click "Custom time..."
-3. Picker message updates in-place → `✅ Got it! I'll remind you on...` with a ✕ Dismiss button
-4. Wait for scheduled time → DM arrives with link back to original message
+**Critical rule learned (INC-022):**
+> Always use `say()` for posting in event handlers (`app_mention`, `message`).  
+> `client.chat_postMessage()` fails silently in some channel contexts.  
+> Use `client.chat_postMessage()` only for posting to a **different** channel (e.g. reminder DMs from the scheduler).
 
 **To test Q&A:**
-1. In Slack: `@UAEOPS_Bot <question>` or DM the bot directly
-2. Bot searches Notion → answers via Claude
-3. If it returns "couldn't find anything" — check pages are connected in Notion (open page → `···` → Connections → UAEOPS_bot)
+1. `@UAEOPS_Bot <question>` in a channel — or DM the bot
+2. ⏳ appears immediately in chat
+3. ⏳ updates to the answer in-place (same message, no thread)
+4. If "couldn't find anything" → check Notion page is connected (page → `···` → Connections → UAEOPS_bot)
+
+**To test reminders:**
+1. `@UAEOPS_Bot remind me` in any channel
+2. Time picker appears in thread (correct — reminder pickers are thread-contextual)
+3. Pick time → "✅ Got it! I'll remind you on..." + ✕ Dismiss
+4. At scheduled time → DM arrives with link to original message
+
+**Next action for a new session:**
+1. Test bot in Slack — confirm ⏳ and answer appear in chat
+2. Re-add feedback learning system (`feedback_store.py` + `_answer_blocks` + action handlers) — it was working code, just rolled back during debugging
+3. Rotate credentials (Section 12) if not already done
+3. Rotate credentials from Section 12 if not already done

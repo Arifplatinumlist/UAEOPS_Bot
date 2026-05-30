@@ -1,7 +1,7 @@
 # UAEOPS Bot — Incident Report & Fix Log
 
 > All known bugs, root causes, and fixes. Used by the bot as a troubleshooting knowledge base.
-> Last updated: May 26, 2026
+> Last updated: May 27, 2026 (INC-023)
 
 ---
 
@@ -214,6 +214,158 @@ curl -s "https://slack.com/api/conversations.list?types=im&limit=1" \
 
 ---
 
+## INC-016 — Bot Didn't Respond to @Mentions from Mobile Slack
+
+**Symptom:** Bot responded to @mentions from desktop Slack but completely ignored them from the iOS/Android app.  
+**Root cause:** Slack mobile sends mentions in the format `<@UID|botname>` (with a display-name suffix), while desktop sends `<@UID>`. The regex `<@{bot_uid}>` only matched the desktop format; the mobile format fell through unstripped, so `clean` still contained `<@UID|name>` and was treated as a different user ID — never matching any Q&A or reminder path.  
+**Fix:** Replace fixed-string mention strip with a regex that handles both forms:
+```python
+clean = re.sub(rf"<@{re.escape(bot_uid)}(?:\|[^>]*)?>", "", raw_text).strip()
+```
+**Files:** `app.py` → `_process_mention`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-017 — Thread Replies Not Visible in Channel Feed on Mobile
+
+**Symptom:** Bot replies appeared in the thread (desktop sidebar) but not in the main channel feed, making them invisible to mobile users who don't expand threads.  
+**Root cause:** `say(thread_ts=...)` without `reply_broadcast=True` posts replies that only appear inside the thread. Slack mobile's default view shows the channel feed, not thread replies.  
+**Fix:** Add `reply_broadcast=True` to all `say()` / `chat_postMessage()` calls in `_process_mention`:
+```python
+client.chat_postMessage(channel=channel, ..., thread_ts=event["ts"], reply_broadcast=True)
+```
+**Files:** `app.py` → `_process_mention`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-018 — DM Messages Intermittently Ignored (Random Drop)
+
+**Symptom:** DMs to the bot sometimes got a response, sometimes nothing. No errors in Railway logs — events simply vanished.  
+**Root cause:** Slack Bolt runs Socket Mode on a single WebSocket receive thread. Each `message` event handler ran synchronously (Notion search + Claude API = 15–20s). When two messages arrived within that window, the second event couldn't be processed because the thread was blocked on the first.  
+**Fix:** Wrap slow handlers in a `ThreadPoolExecutor` so the receive loop is never blocked:
+```python
+_pool = ThreadPoolExecutor(max_workers=4)
+
+@slack_app.event("message")
+def handle_dm(event, say, client):
+    ...
+    _pool.submit(_process_dm, event, say, client)
+```
+**Files:** `app.py`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-019 — Bot Lagged 15–20 Seconds with No User Feedback
+
+**Symptom:** User sent a question; bot went completely silent for 15–20 seconds, then suddenly replied. Users thought the bot had crashed.  
+**Root cause (1):** No placeholder message — the bot did all processing before sending anything.  
+**Root cause (2):** Notion page content was fetched sequentially (one page at a time), each taking ~3s.  
+**Fix:**
+1. Post an immediate "⏳ Searching the knowledge base..." placeholder via `chat_postMessage`, then replace it with `chat_update` once the answer is ready.
+2. Fetch all Notion pages in parallel using `ThreadPoolExecutor`:
+```python
+with ThreadPoolExecutor(max_workers=min(len(pages), 5)) as ex:
+    results = [r for r in ex.map(_fetch_one, pages) if r is not None]
+```
+**Files:** `app.py` → `_process_dm`, `_process_mention`; `knowledge_base.py` → `search()`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-022 — Bot Replies Going to Thread Instead of Main Chat
+
+**Symptom:** Bot answers appeared only in the thread (right-side panel / "thread history") rather than in the main channel conversation. Users on mobile especially missed responses entirely.
+
+**Root cause:** `say(thread_ts=event["ts"])` was used for all Q&A replies in `_process_mention`. The `thread_ts` parameter posts the message as a thread reply, not as a regular channel message. Without it, `say()` posts directly into the channel conversation.
+
+**What didn't work (dead ends to avoid):**
+
+1. `reply_broadcast=True` — This creates a special "thread broadcast" copy in the channel, but it renders differently from normal messages and users don't recognise it as a chat reply. When combined with `chat_update` it's even worse: `chat_update` only updates the thread copy; the channel-feed broadcast copy is a separate message entity that never gets updated.
+
+2. `client.chat_postMessage(channel=channel, text=answer)` directly — Failed silently in the event-handler context (no ⏳ appeared, no answer appeared). Root cause unclear; likely a channel membership or permission scope issue (`chat:write` vs `chat:write.public`). Bolt's `say()` uses the same underlying call but works reliably because it is pre-scoped to the event's channel and workspace context.
+
+**Fix:**
+- Use `say()` with **no `thread_ts`** for all Q&A answers — reply appears as a normal channel message.
+- Use `say()` (not `client.chat_postMessage`) for the ⏳ placeholder too.
+- Use `client.chat_update()` to replace the placeholder in-place once the answer is ready — this works correctly because `chat_update` and the original `say()` call share the same channel context.
+
+```python
+# In handle_mention / handle_dm event handler:
+resp           = say(text="⏳ Searching the knowledge base...")
+placeholder_ts = resp.get("ts")
+_pool.submit(_process_mention, event, say, client, placeholder_ts)
+
+# In _process_mention worker:
+answer = _qa_answer(channel, clean)
+if placeholder_ts:
+    client.chat_update(channel=channel, ts=placeholder_ts, text=answer)
+else:
+    say(text=answer)  # fallback
+```
+
+**Rule:** Always use `say()` for first contact in an event handler. Only use `client.chat_postMessage()` when you need to post to a *different* channel than the event channel (e.g. sending a reminder DM from the scheduler).
+
+**Files:** `app.py` → `handle_mention`, `handle_dm`, `_process_mention`, `_process_dm`  
+**Commits:** `f51bee1`, `d0349ea`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-021 — No Feedback When Sending Multiple Messages Quickly
+
+**Symptom:** When messages were sent faster than the bot could reply (rapid-fire questions), later messages queued silently — no ⏳ placeholder, no reply, nothing visible in Slack. Users assumed the bot had crashed.  
+**Root cause:** The "⏳ Searching the knowledge base..." placeholder was posted *inside* the `ThreadPoolExecutor` worker, not in the Slack event handler. With 4 workers and each Q&A taking 15–20 seconds, a 5th message would queue behind busy workers with zero user-visible acknowledgment until a worker freed up.  
+**Fix:**
+1. Move `client.chat_postMessage("⏳ Searching...")` into the event handler itself (`handle_dm`, `handle_mention`) — takes ~200 ms, safe in the receive thread.
+2. Pass the resulting `placeholder_ts` into `_pool.submit(...)` so the worker only does the slow Notion + Claude work.
+3. Bump thread pool from 4 → 8 workers to handle more concurrency.
+
+Users now see ⏳ within ~200 ms of sending any message, regardless of how many are queued behind it.
+
+**Files:** `app.py` → `handle_dm`, `handle_mention`, `_process_dm`, `_process_mention`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-020 — Bot Completely Ignores All Messages After First Response
+
+**Symptom:** Bot answered the first question correctly. Every subsequent message in the same DM was silently ignored — no "⏳" placeholder, no reply, no Railway log entry for the question.  
+**Root cause (1 — critical):** History corruption. In `_qa_answer`, the augmented user message was appended to `history` *before* the Claude API call. If the API call raised an exception (rate limit, bad response, network error), the message was never removed. The next question added another user turn → history had two consecutive `"role": "user"` entries → Claude rejected the request → exception → another orphaned user message was appended. After the first failure, all subsequent calls failed permanently.  
+**Root cause (2):** `say()` closures passed to the thread pool. `say()` is a Bolt context closure captured at event dispatch time. Using `client.chat_postMessage()` directly (which is always valid) is safer for calls made after the receive-thread has moved on.  
+**Fix (1):** Wrap the Claude API call in `try/except` and `pop()` the orphaned entry on failure:
+```python
+history.append({"role": "user", "content": augmented})
+try:
+    response = claude.messages.create(...)
+    reply = response.content[0].text
+except Exception:
+    history.pop()  # prevent consecutive user turns
+    raise
+```
+**Fix (2):** Replace all `say()` calls in `_process_dm` and `_process_mention` with `client.chat_postMessage()`.  
+**Files:** `app.py` → `_qa_answer`, `_process_dm`, `_process_mention`  
+**Status:** ✅ Resolved
+
+---
+
+## INC-023 — Feedback Learning System Integration
+
+**Symptom:** No 👍/👎 buttons on answers; bot could not learn from user ratings.  
+**Root cause:** `feedback_store.py` was rolled back during INC-022 debugging. Supabase `feedback` table existed but was not integrated into `app.py`.  
+**Fix:** Re-integrated `feedback_store` into `app.py`:
+- Added `_FEEDBACK_AVAILABLE` flag (graceful fallback if Supabase vars missing)
+- `_qa_answer` now calls `feedback_store.get_relevant(question)` to prepend past positively-rated answers as extra Claude context
+- Added `_answer_blocks(answer, feedback_id)` — wraps answer in a section block with 👍/👎 action buttons
+- `_process_mention` and `_process_dm` call `feedback_store.create()` after each answer, pass `feedback_id` to `_answer_blocks`
+- Added `handle_feedback_positive` / `handle_feedback_negative` action handlers — call `feedback_store.rate()`, update message to show thank-you note and remove buttons  
+**Files:** `app.py`  
+**Status:** ✅ Resolved — deployed May 27, 2026
+
+---
+
 ## How to Add a New Page to the Bot's Knowledge Base
 
 1. Open the Notion page
@@ -236,3 +388,8 @@ curl -s "https://slack.com/api/conversations.list?types=im&limit=1" \
 | Bot offline, no response | Deployment in progress or stuck | Check Slack + Supabase via terminal, then `git commit --allow-empty -m "Force redeploy" && git push` |
 | "We had some trouble connecting" on modal | trigger_id expired (Supabase call too slow) | Fixed in `f5905fa` — count cached in button value |
 | No events at all, bot completely silent | `im:read` scope missing | Slack App → OAuth & Permissions → add `im:read` → Reinstall → update SLACK_BOT_TOKEN in Railway |
+| Bot ignores all messages after first reply | History corruption in `_qa_answer` | Fixed in INC-020 — Claude API failure now pops orphaned history entry |
+| Bot doesn't respond from mobile @mention | Mobile mention format `<@UID\|name>` not matched | Fixed in INC-016 — regex handles both desktop and mobile formats |
+| No ⏳ feedback when sending messages quickly | Placeholder posted in pool worker, not event handler | Fixed in INC-021 — placeholder now posted before `_pool.submit()` |
+| Replies go to thread, not main chat | `thread_ts` set on `say()` / `client.chat_postMessage()` used instead of `say()` | Fixed in INC-022 — use `say()` with no `thread_ts`; update placeholder with `chat_update` |
+| No 👍/👎 buttons on answers | `feedback_store` not imported, rolled back | Fixed in INC-023 — re-integrated feedback_store, `_FEEDBACK_AVAILABLE` guards it |

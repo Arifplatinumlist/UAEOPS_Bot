@@ -1,4 +1,3 @@
-import json
 import os
 import logging
 from typing import Optional
@@ -13,7 +12,6 @@ import agents.qa_agent as qa_agent
 import agents.alert_agent as alert_agent
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

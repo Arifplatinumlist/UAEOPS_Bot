@@ -10,6 +10,7 @@ Setup:
 import os
 import logging
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -110,28 +111,51 @@ def search(query: str, top_k: int = 5, threshold: float = 0.0) -> list[dict]:
         if not pages:
             return []
 
-        results = []
-        for page in pages:
+        def _fetch_one(page: dict):
             page_id = page["id"]
             title   = _page_title(page)
             url     = page.get("url", f"https://notion.so/{page_id.replace('-', '')}")
             try:
                 content = _fetch_page_text(page_id)
-                # Include the page even if content is sparse (e.g. image-heavy pages)
                 if not content.strip():
                     content = f"(This page — '{title}' — appears to contain images or non-text content. Direct the user to view it at {url})"
-                results.append({
-                    "title":   title,
-                    "source":  url,
-                    "content": content[:MAX_CONTENT_PER_PAGE],
-                })
+                return {"title": title, "source": url, "content": content[:MAX_CONTENT_PER_PAGE]}
             except Exception as e:
                 logger.warning("Could not fetch Notion page %s (%s): %s", page_id, title, e)
+                return None
+
+        # Fetch all pages in parallel — cuts sequential wait from O(n×t) to O(t)
+        with ThreadPoolExecutor(max_workers=min(len(pages), 5)) as ex:
+            results = [r for r in ex.map(_fetch_one, pages) if r is not None]
         return results
 
     except Exception as e:
         logger.error("Notion search failed: %s", e)
         return []
+
+
+def search_semantic(query: str, top_k: int = 5) -> list[dict]:
+    """
+    Semantic search using Voyage AI + pgvector when available, falling back to
+    Notion keyword search. Returns same shape as search(): [{title, source, content}].
+    """
+    try:
+        import vector_store
+        if os.environ.get("VOYAGE_API_KEY") and vector_store.is_populated():
+            results = vector_store.search(query, top_k=top_k)
+            if results:
+                logger.info("Vector search %r → %d result(s)", query, len(results))
+                return [
+                    {
+                        "title":   r.get("title", ""),
+                        "source":  r.get("source", ""),
+                        "content": r.get("content", ""),
+                    }
+                    for r in results
+                ]
+    except Exception as e:
+        logger.warning("Vector search failed, falling back to keyword: %s", e)
+    return search(query, top_k=top_k)
 
 
 def add_chunks(source: str, chunks: list[str], title: str = "", metadata: dict = None) -> int:
